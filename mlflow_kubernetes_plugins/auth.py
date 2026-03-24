@@ -187,79 +187,64 @@ from mlflow.utils import workspace_context
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-if not hasattr(werkzeug, "__version__"):  # pragma: no cover - compatibility shim
-    werkzeug.__version__ = "werkzeug"
-
-DEFAULT_CACHE_TTL_SECONDS = 300.0
-DEFAULT_USERNAME_CLAIM = "sub"
-DEFAULT_AUTH_GROUP = "mlflow.kubeflow.org"
-DEFAULT_REMOTE_USER_HEADER = "x-remote-user"
-DEFAULT_REMOTE_GROUPS_HEADER = "x-remote-groups"
-DEFAULT_REMOTE_GROUPS_SEPARATOR = "|"
-
-CACHE_TTL_ENV = "MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS"
-USERNAME_CLAIM_ENV = "MLFLOW_K8S_AUTH_USERNAME_CLAIM"
-AUTHORIZATION_MODE_ENV = "MLFLOW_K8S_AUTH_AUTHORIZATION_MODE"
-REMOTE_USER_HEADER_ENV = "MLFLOW_K8S_AUTH_REMOTE_USER_HEADER"
-REMOTE_GROUPS_HEADER_ENV = "MLFLOW_K8S_AUTH_REMOTE_GROUPS_HEADER"
-REMOTE_GROUPS_SEPARATOR_ENV = "MLFLOW_K8S_AUTH_REMOTE_GROUPS_SEPARATOR"
-
-_UNPROTECTED_PATH_PREFIXES = ("/static", "/favicon.ico", "/health", "/build")
-_UNPROTECTED_PATHS = {
-    "/",
-    "/health",
-    "/version",
-    "/metrics",
-    "/api/3.0/mlflow/server-info",
-    "/ajax-api/3.0/mlflow/server-info",
-    "/ajax-api/3.0/mlflow/ui-telemetry",
-}
-RESOURCE_ASSISTANTS = "assistants"
-RESOURCE_DATASETS = "datasets"
-RESOURCE_EXPERIMENTS = "experiments"
-RESOURCE_REGISTERED_MODELS = "registeredmodels"
-RESOURCE_GATEWAY_SECRETS = "gatewaysecrets"
-RESOURCE_GATEWAY_ENDPOINTS = "gatewayendpoints"
-RESOURCE_GATEWAY_MODEL_DEFINITIONS = "gatewaymodeldefinitions"
-_ALLOWED_RESOURCES = {
+from mlflow_kubernetes_plugins.auth.constants import (
+    ALLOWED_RESOURCES as _ALLOWED_RESOURCES,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
+    AUTHORIZATION_MODE_ENV,
+    CACHE_TTL_ENV,
+    DEFAULT_AUTH_GROUP,
+    DEFAULT_CACHE_TTL_SECONDS,
+    DEFAULT_REMOTE_GROUPS_HEADER,
+    DEFAULT_REMOTE_GROUPS_SEPARATOR,
+    DEFAULT_REMOTE_USER_HEADER,
+    DEFAULT_USERNAME_CLAIM,
+    REMOTE_GROUPS_HEADER_ENV,
+    REMOTE_GROUPS_SEPARATOR_ENV,
+    REMOTE_USER_HEADER_ENV,
     RESOURCE_ASSISTANTS,
     RESOURCE_DATASETS,
     RESOURCE_EXPERIMENTS,
-    RESOURCE_REGISTERED_MODELS,
-    RESOURCE_GATEWAY_SECRETS,
     RESOURCE_GATEWAY_ENDPOINTS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
-}
-_WORKSPACE_PERMISSION_RESOURCE_PRIORITY = (
-    RESOURCE_EXPERIMENTS,
-    RESOURCE_DATASETS,
-    RESOURCE_REGISTERED_MODELS,
     RESOURCE_GATEWAY_SECRETS,
-    RESOURCE_GATEWAY_ENDPOINTS,
-    RESOURCE_GATEWAY_MODEL_DEFINITIONS,
+    RESOURCE_REGISTERED_MODELS,
+    USERNAME_CLAIM_ENV,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
+    UNPROTECTED_PATH_PREFIXES as _UNPROTECTED_PATH_PREFIXES,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
+    UNPROTECTED_PATHS as _UNPROTECTED_PATHS,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
+    WORKSPACE_MUTATION_DENIED_MESSAGE as _WORKSPACE_MUTATION_DENIED_MESSAGE,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
+    WORKSPACE_PERMISSION_RESOURCE_PRIORITY as _WORKSPACE_PERMISSION_RESOURCE_PRIORITY,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
+    WORKSPACE_REQUIRED_ERROR_MESSAGE as _WORKSPACE_REQUIRED_ERROR_MESSAGE,
 )
 
-_WORKSPACE_REQUIRED_ERROR_MESSAGE = "Workspace context is required for this request."
-_WORKSPACE_MUTATION_DENIED_MESSAGE = (
-    "Workspace create, update, and delete operations are not supported when MLflow "
-    "workspaces map to Kubernetes namespaces."
-)
+if not hasattr(werkzeug, "__version__"):  # pragma: no cover - compatibility shim
+    werkzeug.__version__ = "werkzeug"
 
 # Re-export GraphQL constants from auth_graphql module
-from mlflow_kubernetes_plugins.auth_graphql import (
+from mlflow_kubernetes_plugins.auth.graphql import (
     GRAPHQL_FIELD_RESOURCE_MAP,
     GRAPHQL_FIELD_VERB_MAP,
     K8S_GRAPHQL_OPERATION_RESOURCE_MAP,
     K8S_GRAPHQL_OPERATION_VERB_MAP,
     _build_graphql_operation_rules,
 )
-from mlflow_kubernetes_plugins.auth_graphql import (
+from mlflow_kubernetes_plugins.auth.graphql import (
     determine_graphql_rules as _determine_graphql_rules,
 )
-from mlflow_kubernetes_plugins.auth_graphql import (
+from mlflow_kubernetes_plugins.auth.graphql import (
     extract_graphql_query_info as _extract_graphql_query_info,
 )
-from mlflow_kubernetes_plugins.auth_graphql import (
+from mlflow_kubernetes_plugins.auth.graphql import (
     validate_graphql_field_authorization as _validate_graphql_field_authorization,
 )
 
