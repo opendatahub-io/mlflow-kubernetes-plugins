@@ -12,7 +12,11 @@ from fastapi.middleware.wsgi import WSGIMiddleware
 from fastapi.testclient import TestClient
 from flask import Flask
 from flask import request as flask_request
-from kubernetes_workspace_provider.auth import (
+from mlflow.exceptions import MlflowException
+from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
+from mlflow.utils import workspace_context
+from mlflow.utils.workspace_utils import WORKSPACE_HEADER_NAME
+from mlflow_kubernetes_plugins.auth import (
     DEFAULT_REMOTE_GROUPS_HEADER,
     DEFAULT_REMOTE_GROUPS_SEPARATOR,
     DEFAULT_REMOTE_USER_HEADER,
@@ -28,19 +32,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from mlflow.exceptions import MlflowException
-from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
-from mlflow.utils import workspace_context
-from mlflow.utils.workspace_utils import WORKSPACE_HEADER_NAME
-
 
 @pytest.fixture(autouse=True)
 def _compile_rules(monkeypatch):
     """Ensure authorization rules are populated before each test."""
     # Limit endpoint discovery to avoid unrelated Flask routes during tests
-    monkeypatch.setattr("kubernetes_workspace_provider.auth.get_endpoints", lambda _: [])
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", lambda _: [])
     monkeypatch.setattr(
-        "kubernetes_workspace_provider.auth.mlflow_app.url_map.iter_rules",
+        "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
         lambda: [],
     )
     _compile_authorization_rules()
@@ -228,7 +227,7 @@ def test_otel_endpoint_requires_workspace_header(fastapi_app_with_k8s_auth):
 def test_otel_endpoint_with_valid_auth(fastapi_app_with_k8s_auth, mock_authorizer):
     client = TestClient(fastapi_app_with_k8s_auth)
 
-    with patch("kubernetes_workspace_provider.auth._parse_jwt_subject", return_value="test-user"):
+    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="test-user"):
         response = client.post(
             OTLP_TRACES_PATH,
             headers={
@@ -428,7 +427,7 @@ def test_job_api_endpoints_require_auth(fastapi_app_with_k8s_auth, mock_authoriz
     )
 
     mock_authorizer.reset_mock()
-    with patch("kubernetes_workspace_provider.auth._parse_jwt_subject", return_value="test-user"):
+    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="test-user"):
         response = client.get(
             "/ajax-api/3.0/jobs/123",
             headers={
@@ -494,7 +493,7 @@ def test_job_api_endpoints_prefer_forwarded_token_on_invalid_authorization(
 def test_graphql_flask_authorizes_when_fastapi_defers(
     mock_authorizer, mock_config, monkeypatch
 ) -> None:
-    from kubernetes_workspace_provider.auth import create_app
+    from mlflow_kubernetes_plugins.auth import create_app
 
     flask_app = Flask(__name__)
 
@@ -516,11 +515,11 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
     )
     with (
         patch(
-            "kubernetes_workspace_provider.auth.KubernetesAuthorizer.is_allowed",
+            "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer.is_allowed",
             return_value=True,
         ) as flask_is_allowed,
         patch(
-            "kubernetes_workspace_provider.auth._load_kubernetes_configuration",
+            "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
             return_value=fake_k8s_config,
         ),
     ):
@@ -553,7 +552,7 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
         client = TestClient(fastapi_app)
         query = '{ mlflowGetExperiment(input: { experimentId: "123" }) { experiment { name } } }'
         with patch(
-            "kubernetes_workspace_provider.auth._parse_jwt_subject",
+            "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
             return_value="test-user",
         ):
             response = client.post(
@@ -583,7 +582,7 @@ def test_job_api_missing_workspace_context_returns_error(
         config_values=mock_config,
     )
     monkeypatch.setattr(
-        "kubernetes_workspace_provider.auth.resolve_workspace_from_header",
+        "mlflow_kubernetes_plugins.auth.resolve_workspace_from_header",
         lambda _header: None,
     )
 

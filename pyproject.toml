@@ -3,30 +3,69 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mlflow-kubernetes-workspace-provider"
+name = "mlflow-kubernetes-plugins"
 version = "0.1.0"
 description = "Kubernetes-backed WorkspaceProvider implementation and Kubernetes authorization plugin for MLflow workspaces."
 readme = "README.md"
-requires-python = ">=3.9"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "MLflow Contributors" }]
+keywords = ["mlflow", "kubernetes", "workspaces", "authorization", "plugins"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dependencies = [
   "mlflow>=3.10.0,<4.0.0",
   "kubernetes>=29.0.0",
   "graphql-core>=3.2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins"
+Repository = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins"
+Issues = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins/issues"
+Documentation = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins/tree/main/docs"
+
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "pytest-mock>=3.10", "httpx>=0.27.0"]
+dev = ["pytest>=7.4", "pytest-mock>=3.10", "httpx>=0.27.0", "ruff", "build"]
 
 [project.entry-points."mlflow.workspace_provider"]
-kubernetes = "kubernetes_workspace_provider.provider:create_kubernetes_workspace_store"
+kubernetes = "mlflow_kubernetes_plugins.provider:create_kubernetes_workspace_store"
 
 [project.entry-points."mlflow.app"]
-kubernetes-auth = "kubernetes_workspace_provider.auth:create_app"
-
-[tool.setuptools]
-package-dir = { "" = "src" }
+kubernetes-auth = "mlflow_kubernetes_plugins.auth:create_app"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["mlflow_kubernetes_plugins*"]
+
+[tool.setuptools.package-data]
+mlflow_kubernetes_plugins = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["mlflow_kubernetes_plugins", "tests"]
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+"mlflow_kubernetes_plugins/auth.py" = ["E402"]

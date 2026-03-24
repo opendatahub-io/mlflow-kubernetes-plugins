@@ -16,7 +16,7 @@ def _mock_namespace_watch():
             return None
 
     patcher.setattr(
-        "kubernetes_workspace_provider.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.provider.watch.Watch",
         lambda: _FakeWatch(),
     )
     yield
