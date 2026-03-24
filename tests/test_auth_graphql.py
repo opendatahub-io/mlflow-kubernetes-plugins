@@ -1,12 +1,9 @@
-import os
-
 import pytest
 from mlflow.exceptions import MlflowException
 from mlflow.protos.service_pb2 import CreateRun
 from mlflow_kubernetes_plugins.auth import (
     GRAPHQL_OPERATION_RULES,
     AuthorizationRule,
-    _compile_authorization_rules,
     _find_authorization_rules,
 )
 from mlflow_kubernetes_plugins.auth_graphql import (
@@ -25,23 +22,13 @@ from mlflow_kubernetes_plugins.auth_graphql import (
 
 
 @pytest.fixture(autouse=True)
-def _compile_rules(monkeypatch):
+def _compile_rules(compile_auth_rules):
     """Ensure authorization rules are populated before each test."""
-    if os.environ.get("K8S_AUTH_TEST_SKIP_COMPILE") == "1":
-        return
-
-    # Limit endpoint discovery to avoid unrelated Flask routes during tests
-    def _fake_get_endpoints(resolver):
-        return [
-            ("/api/2.0/mlflow/runs/create", resolver(CreateRun), ["POST"]),
+    compile_auth_rules(
+        [
+            ("/api/2.0/mlflow/runs/create", CreateRun, ["POST"]),
         ]
-
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", _fake_get_endpoints)
-    monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
-        lambda: [],
     )
-    _compile_authorization_rules()
 
 
 def test_graphql_operation_map_matches_constant():
