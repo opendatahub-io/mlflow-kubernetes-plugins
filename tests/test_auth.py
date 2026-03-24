@@ -67,6 +67,7 @@ from mlflow_kubernetes_plugins.auth import (
     _parse_jwt_subject,
     _parse_remote_groups,
     _RequestIdentity,
+    _reset_compiled_rules,
 )
 
 
@@ -1016,10 +1017,7 @@ def test_compile_rules_raise_for_uncovered_endpoint(monkeypatch):
 
     monkeypatch.setenv("K8S_AUTH_TEST_SKIP_COMPILE", "1")
 
-    auth_mod._RULES_COMPILED = False
-    auth_mod._AUTH_RULES.clear()
-    auth_mod._AUTH_REGEX_RULES.clear()
-    auth_mod._HANDLER_RULES.clear()
+    _reset_compiled_rules()
 
     def _fake_endpoints(resolver):
         def _handler():
