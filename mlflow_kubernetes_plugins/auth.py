@@ -73,6 +73,11 @@ from mlflow_kubernetes_plugins.auth.constants import (
 from mlflow_kubernetes_plugins.auth.constants import (
     WORKSPACE_REQUIRED_ERROR_MESSAGE as _WORKSPACE_REQUIRED_ERROR_MESSAGE,
 )
+from mlflow_kubernetes_plugins.auth.request_context import (
+    AuthorizationRequest,
+    build_fastapi_authorization_request,
+    build_flask_authorization_request,
+)
 from mlflow_kubernetes_plugins.auth.rules import (
     GRAPHQL_OPERATION_RULES,  # noqa: F401
     PATH_AUTHORIZATION_RULES,
@@ -546,18 +551,11 @@ def _enforce_gateway_dependency_permissions(
             )
 
 
-def _authorize_request(
+def _authorize_request_context(
+    request_context: AuthorizationRequest,
     *,
-    authorization_header: str | None,
-    forwarded_access_token: str | None,
-    remote_user_header_value: str | None,
-    remote_groups_header_value: str | None,
-    path: str,
-    method: str,
     authorizer: KubernetesAuthorizer,
     config_values: KubernetesAuthConfig,
-    workspace: str | None,
-    graphql_payload: dict[str, object] | None = None,
 ) -> _AuthorizationResult:
     """
     Resolve the caller identity and ensure the MLflow request is permitted.
@@ -578,31 +576,41 @@ def _authorize_request(
             required but absent, or Kubernetes denies the requested access.
     """
     if config_values.authorization_mode == AuthorizationMode.SELF_SUBJECT_ACCESS_REVIEW:
-        token = _resolve_bearer_token(authorization_header, forwarded_access_token)
+        token = _resolve_bearer_token(
+            request_context.authorization_header,
+            request_context.forwarded_access_token,
+        )
         identity = _RequestIdentity(token=token)
         username = _parse_jwt_subject(token, config_values.username_claim)
     else:
-        remote_user = (remote_user_header_value or "").strip()
+        remote_user = (request_context.remote_user_header_value or "").strip()
         if not remote_user:
             raise MlflowException(
                 f"Missing required '{config_values.user_header}' header for "
                 "SubjectAccessReview mode.",
                 error_code=databricks_pb2.UNAUTHENTICATED,
             )
-        groups = _parse_remote_groups(remote_groups_header_value, config_values.groups_separator)
+        groups = _parse_remote_groups(
+            request_context.remote_groups_header_value,
+            config_values.groups_separator,
+        )
         identity = _RequestIdentity(user=remote_user, groups=groups)
         username = remote_user
 
     workspace_name = None
-    if isinstance(workspace, str):
-        workspace_name = workspace.strip() or None
+    if isinstance(request_context.workspace, str):
+        workspace_name = request_context.workspace.strip() or None
 
-    rules = _find_authorization_rules(path, method, graphql_payload=graphql_payload)
+    rules = _find_authorization_rules(
+        request_context.path,
+        request_context.method,
+        graphql_payload=request_context.graphql_payload,
+    )
     if rules is None or len(rules) == 0:
         _logger.warning(
             "No Kubernetes authorization rule matched request %s %s; returning 404.",
-            method,
-            path,
+            request_context.method,
+            request_context.path,
         )
         raise MlflowException(
             "Endpoint not found.",
@@ -631,8 +639,8 @@ def _authorize_request(
             # Standard RBAC check
             if not rule.resource:
                 raise MlflowException(
-                    f"Authorization rule for '{method} {path}' is missing an RBAC resource "
-                    "mapping.",
+                    f"Authorization rule for '{request_context.method} {request_context.path}' "
+                    "is missing an RBAC resource mapping.",
                     error_code=databricks_pb2.INTERNAL_ERROR,
                 )
             allowed = authorizer.is_allowed(
@@ -664,12 +672,41 @@ def _authorize_request(
             pass  # Authorization is handled via response filtering
         else:
             raise MlflowException(
-                f"Authorization rule for '{method} {path}' is missing a verb or other "
-                "required configuration.",
+                f"Authorization rule for '{request_context.method} {request_context.path}' is "
+                "missing a verb or other required configuration.",
                 error_code=databricks_pb2.INTERNAL_ERROR,
             )
 
     return _AuthorizationResult(identity=identity, rules=rules, username=username)
+
+
+def _authorize_request(
+    *,
+    authorization_header: str | None,
+    forwarded_access_token: str | None,
+    remote_user_header_value: str | None,
+    remote_groups_header_value: str | None,
+    path: str,
+    method: str,
+    authorizer: KubernetesAuthorizer,
+    config_values: KubernetesAuthConfig,
+    workspace: str | None,
+    graphql_payload: dict[str, object] | None = None,
+) -> _AuthorizationResult:
+    return _authorize_request_context(
+        AuthorizationRequest(
+            authorization_header=authorization_header,
+            forwarded_access_token=forwarded_access_token,
+            remote_user_header_value=remote_user_header_value,
+            remote_groups_header_value=remote_groups_header_value,
+            path=path,
+            method=method,
+            workspace=workspace,
+            graphql_payload=graphql_payload,
+        ),
+        authorizer=authorizer,
+        config_values=config_values,
+    )
 
 
 class KubernetesAuthorizer:
@@ -1221,18 +1258,15 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                         workspace_context.clear_server_request_workspace()
 
             try:
-                auth_result = _authorize_request(
-                    authorization_header=request.headers.get("Authorization"),
-                    forwarded_access_token=request.headers.get("X-Forwarded-Access-Token"),
-                    remote_user_header_value=request.headers.get(self.config_values.user_header),
-                    remote_groups_header_value=request.headers.get(
-                        self.config_values.groups_header
+                auth_result = _authorize_request_context(
+                    build_fastapi_authorization_request(
+                        request,
+                        self.config_values,
+                        path=canonical_path,
+                        workspace=workspace_name,
                     ),
-                    path=canonical_path,
-                    method=request.method,
                     authorizer=self.authorizer,
                     config_values=self.config_values,
-                    workspace=workspace_name,
                 )
                 _AUTHORIZATION_HANDLED.set(auth_result)
             except MlflowException as exc:
@@ -1323,27 +1357,15 @@ def create_app(app: Flask = mlflow_app) -> Flask:
         if _is_unprotected_path(canonical_path):
             return None
 
-        graphql_payload: dict[str, object] | None = None
-        if canonical_path.endswith("/graphql"):
-            try:
-                payload = request.get_json(silent=True) or {}
-                if isinstance(payload, dict):
-                    graphql_payload = payload
-            except Exception:
-                graphql_payload = None
-
         try:
-            auth_result = _authorize_request(
-                authorization_header=request.headers.get("Authorization"),
-                forwarded_access_token=request.headers.get("X-Forwarded-Access-Token"),
-                remote_user_header_value=request.headers.get(config_values.user_header),
-                remote_groups_header_value=request.headers.get(config_values.groups_header),
-                path=canonical_path,
-                method=request.method,
+            auth_result = _authorize_request_context(
+                build_flask_authorization_request(
+                    config_values,
+                    path=canonical_path,
+                    workspace=workspace_context.get_request_workspace(),
+                ),
                 authorizer=authorizer,
                 config_values=config_values,
-                workspace=workspace_context.get_request_workspace(),
-                graphql_payload=graphql_payload,
             )
         except MlflowException as exc:
             response = Response(mimetype="application/json")
