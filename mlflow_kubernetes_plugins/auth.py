@@ -25,9 +25,6 @@ from kubernetes import client, config
 from kubernetes.client import AuthorizationV1Api
 from kubernetes.client.exceptions import ApiException
 from kubernetes.config.config_exception import ConfigException
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-
 from mlflow.environment_variables import _MLFLOW_SGI_NAME
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
@@ -187,6 +184,8 @@ from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR, get_endpoints
 from mlflow.server.workspace_helpers import WORKSPACE_HEADER_NAME, resolve_workspace_from_header
 from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
 from mlflow.utils import workspace_context
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 if not hasattr(werkzeug, "__version__"):  # pragma: no cover - compatibility shim
     werkzeug.__version__ = "werkzeug"
@@ -247,20 +246,20 @@ _WORKSPACE_MUTATION_DENIED_MESSAGE = (
 )
 
 # Re-export GraphQL constants from auth_graphql module
-from kubernetes_workspace_provider.auth_graphql import (
+from mlflow_kubernetes_plugins.auth_graphql import (
     GRAPHQL_FIELD_RESOURCE_MAP,
     GRAPHQL_FIELD_VERB_MAP,
     K8S_GRAPHQL_OPERATION_RESOURCE_MAP,
     K8S_GRAPHQL_OPERATION_VERB_MAP,
     _build_graphql_operation_rules,
 )
-from kubernetes_workspace_provider.auth_graphql import (
+from mlflow_kubernetes_plugins.auth_graphql import (
     determine_graphql_rules as _determine_graphql_rules,
 )
-from kubernetes_workspace_provider.auth_graphql import (
+from mlflow_kubernetes_plugins.auth_graphql import (
     extract_graphql_query_info as _extract_graphql_query_info,
 )
-from kubernetes_workspace_provider.auth_graphql import (
+from mlflow_kubernetes_plugins.auth_graphql import (
     validate_graphql_field_authorization as _validate_graphql_field_authorization,
 )
 

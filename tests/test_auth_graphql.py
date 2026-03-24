@@ -1,13 +1,15 @@
 import os
 
 import pytest
-from kubernetes_workspace_provider.auth import (
+from mlflow.exceptions import MlflowException
+from mlflow.protos.service_pb2 import CreateRun
+from mlflow_kubernetes_plugins.auth import (
     GRAPHQL_OPERATION_RULES,
     AuthorizationRule,
     _compile_authorization_rules,
     _find_authorization_rules,
 )
-from kubernetes_workspace_provider.auth_graphql import (
+from mlflow_kubernetes_plugins.auth_graphql import (
     GRAPHQL_FIELD_RESOURCE_MAP,
     GRAPHQL_FIELD_VERB_MAP,
     GRAPHQL_NESTED_MODEL_REGISTRY_FIELDS,
@@ -20,9 +22,6 @@ from kubernetes_workspace_provider.auth_graphql import (
     extract_graphql_query_info,
     validate_graphql_field_authorization,
 )
-
-from mlflow.exceptions import MlflowException
-from mlflow.protos.service_pb2 import CreateRun
 
 
 @pytest.fixture(autouse=True)
@@ -37,9 +36,9 @@ def _compile_rules(monkeypatch):
             ("/api/2.0/mlflow/runs/create", resolver(CreateRun), ["POST"]),
         ]
 
-    monkeypatch.setattr("kubernetes_workspace_provider.auth.get_endpoints", _fake_get_endpoints)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", _fake_get_endpoints)
     monkeypatch.setattr(
-        "kubernetes_workspace_provider.auth.mlflow_app.url_map.iter_rules",
+        "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
         lambda: [],
     )
     _compile_authorization_rules()
@@ -467,7 +466,7 @@ def test_validate_graphql_field_authorization_passes():
 def test_validate_graphql_field_authorization_detects_missing_resource(monkeypatch):
     original_map = GRAPHQL_FIELD_RESOURCE_MAP.copy()
     monkeypatch.setattr(
-        "kubernetes_workspace_provider.auth_graphql.GRAPHQL_FIELD_RESOURCE_MAP",
+        "mlflow_kubernetes_plugins.auth_graphql.GRAPHQL_FIELD_RESOURCE_MAP",
         {k: v for k, v in original_map.items() if k != "test"},
     )
     with pytest.raises(MlflowException, match="Missing from GRAPHQL_FIELD_RESOURCE_MAP"):
@@ -477,7 +476,7 @@ def test_validate_graphql_field_authorization_detects_missing_resource(monkeypat
 def test_validate_graphql_field_authorization_detects_missing_verb(monkeypatch):
     original_map = GRAPHQL_FIELD_VERB_MAP.copy()
     monkeypatch.setattr(
-        "kubernetes_workspace_provider.auth_graphql.GRAPHQL_FIELD_VERB_MAP",
+        "mlflow_kubernetes_plugins.auth_graphql.GRAPHQL_FIELD_VERB_MAP",
         {k: v for k, v in original_map.items() if k != "mlflowGetExperiment"},
     )
     with pytest.raises(MlflowException, match="Missing from GRAPHQL_FIELD_VERB_MAP"):

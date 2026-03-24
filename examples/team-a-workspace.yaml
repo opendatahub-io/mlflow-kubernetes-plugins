@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels:
+    mlflow-enabled: "true"
+  annotations:
+    mlflow.kubeflow.org/workspace-description: "Workspace for Team A"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow-writer
+  namespace: team-a
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow-experiments-reader
+  namespace: team-a
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mlflow-k8s-namespace-access
+  namespace: team-a
+rules:
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources:
+      - assistants
+      - datasets
+      - experiments
+      - registeredmodels
+      - gatewaysecrets
+      - gatewayendpoints
+      - gatewaymodeldefinitions
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - delete
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources:
+      - gatewaysecrets/use
+      - gatewayendpoints/use
+      - gatewaymodeldefinitions/use
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mlflow-k8s-namespace-access
+  namespace: team-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mlflow-k8s-namespace-access
+subjects:
+  - kind: ServiceAccount
+    name: mlflow-writer
+    namespace: team-a
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mlflow-experiments-readonly
+  namespace: team-a
+rules:
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources: ["experiments"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mlflow-experiments-readonly
+  namespace: team-a
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mlflow-experiments-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mlflow-experiments-reader
+    namespace: team-a

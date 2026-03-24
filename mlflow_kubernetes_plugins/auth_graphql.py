@@ -6,16 +6,16 @@ import logging
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
 import graphql
-
-from kubernetes_workspace_provider.auth import (
-    RESOURCE_EXPERIMENTS,
-    RESOURCE_REGISTERED_MODELS,
-)
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
 
+from mlflow_kubernetes_plugins.auth import (
+    RESOURCE_EXPERIMENTS,
+    RESOURCE_REGISTERED_MODELS,
+)
+
 if TYPE_CHECKING:
-    from kubernetes_workspace_provider.auth import AuthorizationRule
+    from mlflow_kubernetes_plugins.auth import AuthorizationRule
 
 _logger = logging.getLogger(__name__)
 

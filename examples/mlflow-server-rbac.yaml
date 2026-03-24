@@ -1,0 +1,31 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mlflow-kubernetes-plugins-server
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources: ["mlflowconfigs"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["mlflow-artifact-connection"]
+    verbs: ["get"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mlflow-kubernetes-plugins-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mlflow-kubernetes-plugins-server
+subjects:
+  - kind: ServiceAccount
+    name: mlflow-server
+    namespace: mlflow

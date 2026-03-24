@@ -1,520 +1,67 @@
-# MLflow Kubernetes Workspace Provider
+# MLflow Kubernetes Plugins
 
-This package ships two MLflow extensions backed by Kubernetes: a workspace provider that lists
-namespaces as MLflow workspaces and an optional authorization plugin that enforces Kubernetes RBAC
-for every MLflow API request. Each MLflow workspace maps 1:1 to a Kubernetes namespace.
+This repository packages two MLflow extensions for Kubernetes-backed deployments:
 
-## Features
+- a workspace provider that maps MLflow workspaces to Kubernetes namespaces
+- an optional authorization plugin that enforces Kubernetes RBAC for MLflow requests
 
-### Kubernetes workspace provider
-
-- Lists Kubernetes namespaces as MLflow workspaces and keeps them cached via a background watch
-  loop.
-- Hides Kubernetes system namespaces (`kube-*`, `openshift-*`) and lets you add extra glob filters.
-- Supports an optional label selector so that only namespaces marked for MLflow are exposed.
-- Populates workspace descriptions from the `mlflow.kubeflow.org/workspace-description` annotation
-  when present.
-- Automatically loads Kubernetes credentials from the in-cluster service account or a local
-  `~/.kube/config`.
-- Provides a read-only experience: namespace lifecycle is owned outside of MLflow and all CRUD calls
-  raise `NotImplementedError`.
-- Supports per-namespace artifact storage overrides via the optional `MLflowConfig` CRD
-  (`mlflowconfigs.mlflow.kubeflow.org`). Namespace owners can point their workspace at a different
-  S3 bucket and/or artifact-path by creating an `MLflowConfig` resource with `spec.artifactRootSecret`
-  (referencing a Secret containing `AWS_S3_BUCKET`) and an optional `spec.artifactRootPath`.
-
-### Kubernetes authorization plugin (`kubernetes-auth`)
-
-- Accepts Kubernetes service-account (or workload identity) tokens via the standard
-  `Authorization: Bearer <token>` header or the `X-Forwarded-Access-Token` header when running
-  behind a proxy.
-- Evaluates Kubernetes `SelfSubjectAccessReview` objects for each MLflow API call across the
-  `assistants`, `datasets`, `experiments`, `registeredmodels`, `gatewaysecrets`,
-  `gatewayendpoints`, and `gatewaymodeldefinitions` resources in the `mlflow.kubeflow.org` API group.
-- Transparently rewrites run requests so the authenticated user becomes the run owner.
-- Filters workspace listings to the set of namespaces the caller can `list`.
-- Denies workspace create/update/delete operations, even if RBAC would otherwise allow them, keeping
-  the namespace lifecycle external to MLflow.
-- Covers both Flask and FastAPI routes exposed by the MLflow server and caches authorization
-  decisions for a configurable TTL.
+These plugins build on top of MLflow's 3.10 workspace support. If you are new to MLflow workspaces, start with the official guide: <https://mlflow.org/docs/latest/self-hosting/workspaces/getting-started/>. It covers the core MLflow server requirements, how workspace context is set by clients, and the upstream workspace lifecycle model.
 
 ## Components
 
-| Entry point       | MLflow hook                 | Description                                                                                                            |
-| ----------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `kubernetes`      | `mlflow.workspace_provider` | Instantiates `KubernetesWorkspaceProvider`, which maps MLflow workspaces to Kubernetes namespaces.                     |
-| `kubernetes-auth` | `mlflow.app`                | Wraps the MLflow tracking server with authorization middleware that consults Kubernetes RBAC before serving a request. |
+| Entry point | MLflow hook | Purpose |
+| --- | --- | --- |
+| [`kubernetes`](docs/workspace-provider.md) | `mlflow.workspace_provider` | Exposes Kubernetes namespaces as MLflow workspaces. |
+| [`kubernetes-auth`](docs/authorization-plugin.md) | `mlflow.app` | Wraps the MLflow server with Kubernetes-based authorization checks. |
 
-## Prerequisites
+## Install
 
-- MLflow 3.6+ with the workspaces feature flag enabled (via `--enable-workspaces` or
-  `MLFLOW_ENABLE_WORKSPACES=1`).
-- A Kubernetes cluster reachable from the MLflow tracking server.
-- The service account used by the MLflow server must be allowed to list and watch namespaces. If
-  per-namespace artifact root overrides are enabled (via the `MLflowConfig` CRD), the service account
-  also needs permissions to list and watch `mlflowconfigs.mlflow.kubeflow.org` cluster-wide, and to
-  get the `mlflow-artifact-connection` Secret in namespaces that define an `MLflowConfig`.
-- Users (or service accounts acting on their behalf) need permissions in the `mlflow.kubeflow.org`
-  API group that align with the operations they perform (see
-  [Kubernetes RBAC requirements](#kubernetes-rbac-requirements)).
-- `kubectl` 1.24+ if you rely on `kubectl create token` to mint service-account tokens. Older
-  clusters may require manually creating token Secrets.
-
-## Installation
+Install from PyPI:
 
 ```bash
-pip install ./kubernetes-workspace-provider
+pip install mlflow-kubernetes-plugins
 ```
 
 For local development:
 
 ```bash
-pip install -e "./kubernetes-workspace-provider[dev]"
+pip install -e ".[dev]"
 ```
 
-## Quick start
+## Quick Start
 
-### 1. Install MLflow and the provider
-
-Ensure the MLflow server environment has both packages available:
-
-```bash
-pip install mlflow
-pip install ./kubernetes-workspace-provider
-```
-
-### 2. Prepare Kubernetes namespaces and RBAC
-
-Optionally, label the namespaces you want to expose (e.g., `mlflow-enabled=true`) and, optionally,
-add the `mlflow.kubeflow.org/workspace-description` annotation for human-friendly descriptions.
-Grant the MLflow server service account permissions as shown in the
-[example manifest](#example-manifest).
-
-### 3. Configure the server
-
-Either set environment variables (e.g. `MLFLOW_K8S_WORKSPACE_LABEL_SELECTOR="mlflow-enabled=true"`)
-or pass query parameters on the workspace store URI. The examples below use environment variables so
-the server flags stay short.
-
-### 4. Start MLflow with the provider and plugin
+1. Enable MLflow workspaces on an MLflow server backed by a SQL store.
+2. Install this package into the same environment as the MLflow server.
+3. Configure the workspace provider and, if needed, the auth plugin.
 
 ```bash
-# Replace these with your own selector and default namespace.
 export MLFLOW_K8S_WORKSPACE_LABEL_SELECTOR="mlflow-enabled=true"
 export MLFLOW_K8S_DEFAULT_WORKSPACE="team-a"
 
 mlflow server \
-  --backend-store-uri sqlite:///$(pwd)/mlflow.db \
-  --default-artifact-root ./mlruns-artifacts \
+  --backend-store-uri postgresql://user:pass@localhost/mlflow \
+  --default-artifact-root s3://mlflow-artifacts \
   --enable-workspaces \
   --workspace-store-uri "kubernetes://" \
   --app-name kubernetes-auth
 ```
 
-SQLite keeps the quick start self-contained; switch to a managed database and durable artifact store
-for production deployments. Omit `--app-name kubernetes-auth` if you do not need the Kubernetes RBAC
-plugin.
+Use `--app-name kubernetes-auth` only when you want request authorization enforced by Kubernetes RBAC.
 
-### 5. Call the API with a Kubernetes token
+## Documentation
 
-```bash
-TOKEN=$(kubectl -n team-a create token mlflow-writer)
-curl \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "X-MLFLOW-WORKSPACE: team-a" \
-  http://<mlflow-host>/api/2.0/mlflow/experiments/search
-```
-
-When running behind a reverse proxy, forward the token via `X-Forwarded-Access-Token` instead of (or
-in addition to) the `Authorization` header.
-
-## Configuration
-
-`KubernetesWorkspaceProvider` reads its options from (1) environment variables, (2) keyword
-arguments passed to the provider constructor, and (3) query parameters on the `kubernetes://`
-workspace store URI. Later sources override earlier ones, so a query parameter always wins over an
-environment variable.
-
-### Workspace provider options
-
-| Variable                              | Default | Description                                                                                                                                                  |
-| ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `MLFLOW_K8S_WORKSPACE_LABEL_SELECTOR` | empty   | Optional Kubernetes label selector applied when listing namespaces (for example `mlflow-enabled=true,environment in (prod,staging)`).                        |
-| `MLFLOW_K8S_DEFAULT_WORKSPACE`        | empty   | Optional workspace (namespace) name used when a request omits `X-MLFLOW-WORKSPACE`. When unset, clients must always send the header or call `set_workspace`. |
-| `MLFLOW_K8S_NAMESPACE_EXCLUDE_GLOBS`  | empty   | Extra comma-separated glob patterns (e.g. `team-secret-*,*-internal`) to hide alongside the built-in `kube-*` and `openshift-*` exclusions.                  |
-
-Label selectors use the standard Kubernetes string format, so multiple key/value clauses are simply
-comma-separated. Namespaces that match the built-in or custom exclude globs are hidden from both
-listings and lookups—referencing them later will raise a "workspace not found" error. If
-`MLFLOW_K8S_DEFAULT_WORKSPACE` is not set and a request omits a workspace header or CLI override,
-the MLflow server returns an `INVALID_PARAMETER_VALUE` error rather than guessing.
-
-### Authorization plugin options
-
-| Variable                                  | Default                      | Description                                                                                                                                                             |
-| ----------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS`       | `300`                        | TTL (in seconds) for cached access-review decisions. Must be a positive number if set.                                                                                  |
-| `MLFLOW_K8S_AUTH_USERNAME_CLAIM`          | `sub`                        | JWT/OIDC claim to treat as the authenticated username. This value is injected into run payloads as `user_id`.                                                           |
-| `MLFLOW_K8S_AUTH_AUTHORIZATION_MODE`      | `self_subject_access_review` | Determines whether the plugin performs `SelfSubjectAccessReview` (default) using the caller's token or `SubjectAccessReview` using headers provided by a trusted proxy. |
-| `MLFLOW_K8S_AUTH_REMOTE_USER_HEADER`      | `x-remote-user`              | HTTP header (case-insensitive) that carries the authenticated username when `subject_access_review` mode is enabled (aligned with kube-rbac-proxy defaults).            |
-| `MLFLOW_K8S_AUTH_REMOTE_GROUPS_HEADER`    | `x-remote-groups`            | HTTP header that lists the user's groups when `subject_access_review` mode is enabled.                                                                                  |
-| `MLFLOW_K8S_AUTH_REMOTE_GROUPS_SEPARATOR` | `\|`                         | Separator used to split the groups header into individual entries (matches kube-rbac-proxy's `--auth-header-groups-field-separator`).                                   |
-
-#### Using kube-rbac-proxy headers
-
-Reverse proxies such as [`kube-rbac-proxy`](https://github.com/brancz/kube-rbac-proxy) can
-authenticate end users but do not always forward their bearer tokens. Set
-`MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=subject_access_review` so the MLflow plugin trusts the proxy's
-headers and performs a Kubernetes `SubjectAccessReview` on behalf of the reported user:
-
-```bash
-export MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=subject_access_review
-# Override these if kube-rbac-proxy is configured with custom names/separators
-export MLFLOW_K8S_AUTH_REMOTE_USER_HEADER="x-remote-user"
-export MLFLOW_K8S_AUTH_REMOTE_GROUPS_HEADER="x-remote-groups"
-export MLFLOW_K8S_AUTH_REMOTE_GROUPS_SEPARATOR="|"
-```
-
-In this mode the MLflow server's own service account contacts the Kubernetes API, so it must be
-allowed to `create` the `subjectaccessreviews.authorization.k8s.io` resource in addition to the
-namespace watch permissions described below. The user and group information from the headers becomes
-the authoritative identity (and is also injected into run payloads), so be sure only a trusted proxy
-can reach MLflow.
-
-### Workspace store URI parameters
-
-Pass these as query parameters to the `kubernetes://` workspace store URI. URL-encode values as
-needed.
-
-- `label_selector`: overrides `MLFLOW_K8S_WORKSPACE_LABEL_SELECTOR`.
-- `default_workspace`: overrides `MLFLOW_K8S_DEFAULT_WORKSPACE`.
-- `namespace_exclude_globs`: comma-separated patterns that augment the built-in exclusions.
-
-Leave a parameter empty (e.g., `label_selector=`) to defer to environment variables.
-
-## Running the MLflow server
-
-`KubernetesWorkspaceProvider` automatically tries `config.load_incluster_config()` and falls back to
-`config.load_kube_config()`, so the MLflow server can run either inside a cluster (using its service
-account token) or from a workstation that has a valid `~/.kube/config`.
-
-Enable workspaces and reference the provider by scheme:
-
-```bash
-mlflow server \
-  --backend-store-uri postgresql://... \
-  --default-artifact-root s3://mlflow-artifacts \
-  --enable-workspaces \
-  --workspace-store-uri "kubernetes://?label_selector=mlflow-enabled%3Dtrue&namespace_exclude_globs=team-secret-*,*-internal"
-```
-
-Add `--app-name kubernetes-auth` to activate the authorization plugin. When MLflow runs under
-`uvicorn`, the plugin automatically injects FastAPI middleware so OTLP trace ingestion and Job APIs
-are also protected.
-
-## Sending requests
-
-Clients must supply a workspace context and either a bearer token
-(`self_subject_access_review`) or trusted proxy headers (`subject_access_review`).
-
-### Workspace context options
-
-- Set the `X-MLFLOW-WORKSPACE` header on every HTTP request.
-- Call `mlflow.set_workspace("team-a")` in the Python client.
-- Export `MLFLOW_WORKSPACE=team-a` before using the CLI.
-
-### Authentication options
-
-- Provide `Authorization: Bearer <token>` (or `X-Forwarded-Access-Token`) explicitly when calling
-  the REST API.
-- Export `MLFLOW_TRACKING_TOKEN=$(kubectl -n team-a create token mlflow-writer)` so MLflow CLIs and
-  SDKs automatically send the bearer token without additional flags.
-- When `MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=subject_access_review`, supply the configured
-  remote user/group headers (defaults: `x-remote-user`, `x-remote-groups`).
-
-If neither a workspace header nor `MLFLOW_K8S_DEFAULT_WORKSPACE` is provided, the server fails the
-request with `INVALID_PARAMETER_VALUE` before executing any work.
-
-Example request:
-
-```bash
-TOKEN=$(kubectl -n team-a create token mlflow-experiments-reader)
-curl \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "X-MLFLOW-WORKSPACE: team-a" \
-  http://<mlflow-host>/api/2.0/mlflow/runs/search
-```
-
-Reverse proxies such as Istio or OAuth2 proxies can forward the caller token via
-`X-Forwarded-Access-Token`, which the plugin treats the same as `Authorization`.
+- [`docs/index.md`](docs/index.md): docs index
+- [`docs/workspace-provider.md`](docs/workspace-provider.md): workspace provider behavior, configuration, and startup
+- [`docs/authorization-plugin.md`](docs/authorization-plugin.md): auth modes, headers, and request handling
+- [`docs/kubernetes-rbac.md`](docs/kubernetes-rbac.md): RBAC requirements and example manifests
 
 ## Development
 
-In a fresh virtual environment, align tool versions and generate protobuf stubs before installing
-the editable package:
+Run the main local checks from the repository root:
 
 ```bash
-uv self update 0.9.8
-bash dev/generate-protos.sh
-pip install -e "./kubernetes-workspace-provider[dev]"
-pytest kubernetes-workspace-provider/tests
+pip install -e ".[dev]"
+ruff check .
+pytest
+python -m build
 ```
-
-`uv self update 0.9.8` matches the version MLflow currently pins for docs builds; skipping it can
-lead to dependency resolution differences.
-
-## Kubernetes RBAC requirements
-
-Both the workspace provider and the authorization plugin communicate with the Kubernetes control
-plane. Grant the MLflow server service account permission to list and watch namespaces:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: mlflow-k8s-workspace-provider
-rules:
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["list", "watch"]
-  # Required only when the MLflowConfig CRD is installed for per-namespace
-  # artifact root overrides. Safe to omit if the CRD is not used.
-  - apiGroups: ["mlflow.kubeflow.org"]
-    resources: ["mlflowconfigs"]
-    verbs: ["list", "watch"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["mlflow-artifact-connection"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: mlflow-k8s-workspace-provider
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: mlflow-k8s-workspace-provider
-subjects:
-  - kind: ServiceAccount
-    name: <service-account-name>
-    namespace: <service-account-namespace>
-```
-
-> **Note:** The `mlflowconfigs` and `secrets` rules are only required when using the `MLflowConfig`
-> CRD for per-namespace artifact storage overrides. The CRD enforces the Secret name
-> `mlflow-artifact-connection`, so `resourceNames` can be scoped accordingly. If the CRD is not
-> installed, these permissions are unnecessary.
-
-The authorization plugin evaluates Kubernetes `SelfSubjectAccessReview` requests against the
-`mlflow.kubeflow.org` API group. Tokens presented to the MLflow API must be authorized for the
-following for full access:
-
-| Resource                      | Verbs                                       |
-| ----------------------------- | ------------------------------------------- |
-| `assistants`                  | `get`, `create`, `update`                   |
-| `datasets`                    | `get`, `list`, `create`, `update`, `delete` |
-| `experiments`                 | `get`, `list`, `create`, `update`, `delete` |
-| `registeredmodels`            | `get`, `list`, `create`, `update`, `delete` |
-| `gatewaysecrets`              | `get`, `list`, `create`, `update`, `delete` |
-| `gatewaysecrets/use`          | `create`                                    |
-| `gatewayendpoints`            | `get`, `list`, `create`, `update`, `delete` |
-| `gatewayendpoints/use`        | `create`                                    |
-| `gatewaymodeldefinitions`     | `get`, `list`, `create`, `update`, `delete` |
-| `gatewaymodeldefinitions/use` | `create`                                    |
-
-> **Note:** The assistant API is currently restricted to localhost access by MLflow itself. The
-> `assistants` resource exists for forward-compatibility in case this restriction is relaxed.
->
-> **Note:** Datasets (evaluation datasets, dataset records, and dataset tags) are authorized via the
-> dedicated `datasets` resource.
->
-> **Note:** Prompt optimization jobs use experiment permissions. There is no separate `jobs`
-> resource; all prompt optimization job operations are authorized via the `experiments` resource,
-> matching upstream MLflow.
->
-> **Note:** Prompts share storage and permissions with registered models. Granting access to the
-> `registeredmodels` resource automatically covers prompt operations; no separate `prompts` RBAC
-> entry is required.
->
-> **Note:** Scorers use experiment permissions. There is no separate `scorers` resource; all scorer
-> operations are authorized via the `experiments` resource.
->
-> **Note:** Gateway resources use `use` subresources for fine-grained control. Grant `create` on
-> `gatewayendpoints/use` to invoke endpoints, `gatewaymodeldefinitions/use` to reference model
-> definitions when creating/updating endpoints, and `gatewaysecrets/use` to reference secrets when
-> creating/updating model definitions.
-
-For workloads restricted to a single namespace, grant the service account these permissions with a
-`Role` and `RoleBinding`:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: mlflow-k8s-namespace-access
-  namespace: <workspace-namespace>
-rules:
-  - apiGroups:
-      - mlflow.kubeflow.org
-    resources:
-      - assistants
-      - datasets
-      - experiments
-      - registeredmodels
-      - gatewaysecrets
-      - gatewayendpoints
-      - gatewaymodeldefinitions
-    verbs:
-      - get
-      - list
-      - create
-      - update
-      - delete
-  - apiGroups:
-      - mlflow.kubeflow.org
-    resources:
-      - gatewaysecrets/use
-      - gatewayendpoints/use
-      - gatewaymodeldefinitions/use
-    verbs:
-      - create
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: mlflow-k8s-namespace-access
-  namespace: <workspace-namespace>
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: mlflow-k8s-namespace-access
-subjects:
-  - kind: ServiceAccount
-    name: <service-account-name>
-    namespace: <service-account-namespace>
-```
-
-When `MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=subject_access_review`, the MLflow server itself performs
-Kubernetes `SubjectAccessReview` calls using its service account. Grant that account permission to
-`create` the `subjectaccessreviews.authorization.k8s.io` resource (cluster-scoped or namespaced via
-an aggregated `Role`) in addition to the namespace list/watch permissions shown earlier.
-
-### Example manifest
-
-The following manifest provisions a `team-a` namespace annotated for MLflow, service accounts for
-writers and read-only experiment access, and the necessary RBAC bindings:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: team-a
-  annotations:
-    mlflow.kubeflow.org/workspace-description: "Workspace for my team"
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: mlflow-writer
-  namespace: team-a
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: mlflow-experiments-reader
-  namespace: team-a
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: mlflow-k8s-namespace-access
-  namespace: team-a
-rules:
-  - apiGroups:
-      - mlflow.kubeflow.org
-    resources:
-      - assistants
-      - datasets
-      - experiments
-      - registeredmodels
-      - gatewaysecrets
-      - gatewayendpoints
-      - gatewaymodeldefinitions
-    verbs:
-      - get
-      - list
-      - create
-      - update
-      - delete
-  - apiGroups:
-      - mlflow.kubeflow.org
-    resources:
-      - gatewaysecrets/use
-      - gatewayendpoints/use
-      - gatewaymodeldefinitions/use
-    verbs:
-      - create
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: mlflow-k8s-namespace-access
-  namespace: team-a
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: mlflow-k8s-namespace-access
-subjects:
-  - kind: ServiceAccount
-    name: mlflow-writer
-    namespace: team-a
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: mlflow-experiments-readonly
-  namespace: team-a
-rules:
-  - apiGroups:
-      - mlflow.kubeflow.org
-    resources:
-      - experiments
-    verbs:
-      - get
-      - list
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: mlflow-experiments-readonly
-  namespace: team-a
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: mlflow-experiments-readonly
-subjects:
-  - kind: ServiceAccount
-    name: mlflow-experiments-reader
-    namespace: team-a
-```
-
-Apply the manifest with:
-
-```bash
-kubectl apply -f team-a-workspace.yaml
-```
-
-### Generating tokens for service accounts
-
-To obtain an authentication token for either service account (requires Kubernetes 1.24+):
-
-```bash
-kubectl -n team-a create token mlflow-writer
-kubectl -n team-a create token mlflow-experiments-reader
-```
-
-Include the resulting token in the `Authorization: Bearer <token>` header (or
-`X-Forwarded-Access-Token` when a proxy handles authentication) along with the `X-MLFLOW-WORKSPACE`
-header for every MLflow request. Older clusters may not support `kubectl create token`. In that
-case, consult the Kubernetes documentation on manually provisioning service-account token Secrets.
