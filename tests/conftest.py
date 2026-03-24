@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 
@@ -21,3 +23,29 @@ def _mock_namespace_watch():
     )
     yield
     patcher.undo()
+
+
+@pytest.fixture
+def compile_auth_rules(monkeypatch):
+    def _compile(endpoint_specs):
+        if os.environ.get("K8S_AUTH_TEST_SKIP_COMPILE") == "1":
+            return
+
+        def _fake_get_endpoints(resolver):
+            return [(path, resolver(request_class), methods) for path, request_class, methods in endpoint_specs]
+
+        monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", _fake_get_endpoints)
+        monkeypatch.setattr(
+            "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
+            lambda: [],
+        )
+
+        from mlflow_kubernetes_plugins.auth import (
+            _compile_authorization_rules,
+            _reset_compiled_rules,
+        )
+
+        _reset_compiled_rules()
+        _compile_authorization_rules()
+
+    return _compile

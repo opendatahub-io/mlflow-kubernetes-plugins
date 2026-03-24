@@ -25,7 +25,6 @@ from mlflow_kubernetes_plugins.auth import (
     KubernetesAuthConfig,
     KubernetesAuthMiddleware,
     KubernetesAuthorizer,
-    _compile_authorization_rules,
     _validate_fastapi_route_authorization,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -34,15 +33,9 @@ from starlette.responses import JSONResponse
 
 
 @pytest.fixture(autouse=True)
-def _compile_rules(monkeypatch):
+def _compile_rules(compile_auth_rules):
     """Ensure authorization rules are populated before each test."""
-    # Limit endpoint discovery to avoid unrelated Flask routes during tests
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", lambda _: [])
-    monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
-        lambda: [],
-    )
-    _compile_authorization_rules()
+    compile_auth_rules([])
 
 
 def test_otel_endpoints_in_auth_rules():
@@ -616,6 +609,42 @@ def test_fastapi_route_validation_fails_for_missing_rule():
 
     with pytest.raises(MlflowException, match="FastAPI endpoints"):
         _validate_fastapi_route_authorization(app)
+
+
+def test_create_app_wraps_flask_with_fastapi_under_uvicorn(monkeypatch):
+    from mlflow_kubernetes_plugins.auth import create_app
+
+    flask_app = Flask(__name__)
+    fastapi_app = Mock()
+    validate_fastapi_routes = Mock()
+    validate_graphql = Mock()
+    authorizer = Mock(spec=KubernetesAuthorizer)
+    config_values = Mock(spec=KubernetesAuthConfig)
+
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth._compile_authorization_rules", lambda: None)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.create_fastapi_app", lambda app: fastapi_app)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth._validate_fastapi_route_authorization", validate_fastapi_routes)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth._validate_graphql_field_authorization", validate_graphql)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.KubernetesAuthConfig.from_env",
+        lambda: config_values,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer",
+        lambda config_values: authorizer,
+    )
+
+    with patch("mlflow_kubernetes_plugins.auth._MLFLOW_SGI_NAME.get", return_value="uvicorn"):
+        result = create_app(flask_app)
+
+    assert result is fastapi_app
+    fastapi_app.add_middleware.assert_called_once()
+    middleware_args, middleware_kwargs = fastapi_app.add_middleware.call_args
+    assert middleware_args[0] is KubernetesAuthMiddleware
+    assert middleware_kwargs["authorizer"] is authorizer
+    assert middleware_kwargs["config_values"] is config_values
+    validate_fastapi_routes.assert_called_once_with(fastapi_app)
+    validate_graphql.assert_called_once_with()
 
 
 # Example usage documentation

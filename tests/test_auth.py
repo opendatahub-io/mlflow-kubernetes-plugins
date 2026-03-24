@@ -5,7 +5,6 @@ This suite exercises request overrides, authorization rules, and caching logic.
 
 import base64
 import json
-import os
 import time
 from hashlib import sha256
 from types import SimpleNamespace
@@ -59,7 +58,6 @@ from mlflow_kubernetes_plugins.auth import (
     _authorize_request,
     _CacheEntry,
     _canonicalize_path,
-    _compile_authorization_rules,
     _find_authorization_rules,
     _is_unprotected_path,
     _normalize_rules,
@@ -72,40 +70,18 @@ from mlflow_kubernetes_plugins.auth import (
 
 
 @pytest.fixture(autouse=True)
-def _compile_rules(monkeypatch):
+def _compile_rules(compile_auth_rules):
     """Ensure authorization rules are populated before each test."""
-    if os.environ.get("K8S_AUTH_TEST_SKIP_COMPILE") == "1":
-        return
-
-    # Limit endpoint discovery to avoid unrelated Flask routes during tests
-    def _fake_get_endpoints(resolver):
-        return [
-            ("/api/2.0/mlflow/runs/create", resolver(CreateRun), ["POST"]),
-            ("/api/3.0/mlflow/workspaces", resolver(ListWorkspaces), ["GET"]),
-            ("/api/3.0/mlflow/workspaces", resolver(CreateWorkspace), ["POST"]),
-            (
-                "/api/3.0/mlflow/workspaces/<workspace_name>",
-                resolver(GetWorkspace),
-                ["GET"],
-            ),
-            (
-                "/api/3.0/mlflow/workspaces/<workspace_name>",
-                resolver(UpdateWorkspace),
-                ["PATCH"],
-            ),
-            (
-                "/api/3.0/mlflow/workspaces/<workspace_name>",
-                resolver(DeleteWorkspace),
-                ["DELETE"],
-            ),
+    compile_auth_rules(
+        [
+            ("/api/2.0/mlflow/runs/create", CreateRun, ["POST"]),
+            ("/api/3.0/mlflow/workspaces", ListWorkspaces, ["GET"]),
+            ("/api/3.0/mlflow/workspaces", CreateWorkspace, ["POST"]),
+            ("/api/3.0/mlflow/workspaces/<workspace_name>", GetWorkspace, ["GET"]),
+            ("/api/3.0/mlflow/workspaces/<workspace_name>", UpdateWorkspace, ["PATCH"]),
+            ("/api/3.0/mlflow/workspaces/<workspace_name>", DeleteWorkspace, ["DELETE"]),
         ]
-
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", _fake_get_endpoints)
-    monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
-        lambda: [],
     )
-    _compile_authorization_rules()
 
 
 def _make_jwt_token(payload: dict[str, object]) -> str:
