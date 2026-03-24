@@ -9,7 +9,7 @@ import graphql
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
 
-from mlflow_kubernetes_plugins.auth import (
+from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_EXPERIMENTS,
     RESOURCE_REGISTERED_MODELS,
 )

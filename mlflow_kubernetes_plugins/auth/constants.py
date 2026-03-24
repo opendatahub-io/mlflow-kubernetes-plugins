@@ -1,0 +1,61 @@
+"""Shared constants for the MLflow Kubernetes auth plugin."""
+
+from __future__ import annotations
+
+DEFAULT_CACHE_TTL_SECONDS = 300.0
+DEFAULT_USERNAME_CLAIM = "sub"
+DEFAULT_AUTH_GROUP = "mlflow.kubeflow.org"
+DEFAULT_REMOTE_USER_HEADER = "x-remote-user"
+DEFAULT_REMOTE_GROUPS_HEADER = "x-remote-groups"
+DEFAULT_REMOTE_GROUPS_SEPARATOR = "|"
+
+CACHE_TTL_ENV = "MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS"
+USERNAME_CLAIM_ENV = "MLFLOW_K8S_AUTH_USERNAME_CLAIM"
+AUTHORIZATION_MODE_ENV = "MLFLOW_K8S_AUTH_AUTHORIZATION_MODE"
+REMOTE_USER_HEADER_ENV = "MLFLOW_K8S_AUTH_REMOTE_USER_HEADER"
+REMOTE_GROUPS_HEADER_ENV = "MLFLOW_K8S_AUTH_REMOTE_GROUPS_HEADER"
+REMOTE_GROUPS_SEPARATOR_ENV = "MLFLOW_K8S_AUTH_REMOTE_GROUPS_SEPARATOR"
+
+UNPROTECTED_PATH_PREFIXES = ("/static", "/favicon.ico", "/health", "/build")
+UNPROTECTED_PATHS = {
+    "/",
+    "/health",
+    "/version",
+    "/metrics",
+    "/api/3.0/mlflow/server-info",
+    "/ajax-api/3.0/mlflow/server-info",
+    "/ajax-api/3.0/mlflow/ui-telemetry",
+}
+
+RESOURCE_ASSISTANTS = "assistants"
+RESOURCE_DATASETS = "datasets"
+RESOURCE_EXPERIMENTS = "experiments"
+RESOURCE_REGISTERED_MODELS = "registeredmodels"
+RESOURCE_GATEWAY_SECRETS = "gatewaysecrets"
+RESOURCE_GATEWAY_ENDPOINTS = "gatewayendpoints"
+RESOURCE_GATEWAY_MODEL_DEFINITIONS = "gatewaymodeldefinitions"
+
+ALLOWED_RESOURCES = {
+    RESOURCE_ASSISTANTS,
+    RESOURCE_DATASETS,
+    RESOURCE_EXPERIMENTS,
+    RESOURCE_REGISTERED_MODELS,
+    RESOURCE_GATEWAY_SECRETS,
+    RESOURCE_GATEWAY_ENDPOINTS,
+    RESOURCE_GATEWAY_MODEL_DEFINITIONS,
+}
+
+WORKSPACE_PERMISSION_RESOURCE_PRIORITY = (
+    RESOURCE_EXPERIMENTS,
+    RESOURCE_DATASETS,
+    RESOURCE_REGISTERED_MODELS,
+    RESOURCE_GATEWAY_SECRETS,
+    RESOURCE_GATEWAY_ENDPOINTS,
+    RESOURCE_GATEWAY_MODEL_DEFINITIONS,
+)
+
+WORKSPACE_REQUIRED_ERROR_MESSAGE = "Workspace context is required for this request."
+WORKSPACE_MUTATION_DENIED_MESSAGE = (
+    "Workspace create, update, and delete operations are not supported when MLflow "
+    "workspaces map to Kubernetes namespaces."
+)
