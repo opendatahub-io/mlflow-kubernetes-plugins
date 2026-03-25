@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlflow-kubernetes-plugins"
-version = "0.1.0"
+version = "1.0.0"
 description = "Kubernetes-backed WorkspaceProvider implementation and Kubernetes authorization plugin for MLflow workspaces."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "MLflow Contributors" }]
+authors = [{ name = "Red Hat" }]
 keywords = ["mlflow", "kubernetes", "workspaces", "authorization", "plugins"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
   "Operating System :: OS Independent",
