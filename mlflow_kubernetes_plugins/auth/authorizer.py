@@ -34,7 +34,7 @@ from mlflow_kubernetes_plugins.auth.constants import (
 )
 
 if TYPE_CHECKING:
-    from mlflow_kubernetes_plugins.auth import _RequestIdentity
+    from mlflow_kubernetes_plugins.auth.core import _RequestIdentity
 
 _logger = logging.getLogger(__name__)
 
@@ -171,13 +171,9 @@ class KubernetesAuthorizer:
         )
 
         if self._mode == AuthorizationMode.SELF_SUBJECT_ACCESS_REVIEW:
-            import mlflow_kubernetes_plugins.auth as auth_mod
-
-            self._base_configuration = auth_mod._load_kubernetes_configuration()
+            self._base_configuration = _load_kubernetes_configuration()
         else:
-            import mlflow_kubernetes_plugins.auth as auth_mod
-
-            self._sar_api_client = auth_mod._create_api_client_for_subject_access_reviews()
+            self._sar_api_client = _create_api_client_for_subject_access_reviews()
 
     def _build_api_client_with_token(self, token: str) -> client.ApiClient:
         if self._base_configuration is None:

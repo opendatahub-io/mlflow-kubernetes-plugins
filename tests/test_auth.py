@@ -35,13 +35,23 @@ from mlflow.protos.service_pb2 import (
     UpdateWorkspace,
     UpsertDatasetRecords,
 )
+from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR
 from mlflow.utils import workspace_context
-from mlflow_kubernetes_plugins.auth import (
+from mlflow_kubernetes_plugins.auth.authorizer import (
+    AuthorizationMode,
+    KubernetesAuthConfig,
+    KubernetesAuthorizer,
+    _AuthorizationCache,
+    _CacheEntry,
+)
+from mlflow_kubernetes_plugins.auth.compiler import (
+    _find_authorization_rules,
+    _reset_compiled_rules,
+)
+from mlflow_kubernetes_plugins.auth.constants import (
     AUTHORIZATION_MODE_ENV,
-    PATH_AUTHORIZATION_RULES,
     REMOTE_GROUPS_HEADER_ENV,
     REMOTE_USER_HEADER_ENV,
-    REQUEST_AUTHORIZATION_RULES,
     RESOURCE_ASSISTANTS,
     RESOURCE_DATASETS,
     RESOURCE_EXPERIMENTS,
@@ -49,23 +59,21 @@ from mlflow_kubernetes_plugins.auth import (
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
     RESOURCE_REGISTERED_MODELS,
-    STATIC_PREFIX_ENV_VAR,
-    AuthorizationMode,
-    AuthorizationRule,
-    KubernetesAuthConfig,
-    KubernetesAuthorizer,
-    _AuthorizationCache,
+)
+from mlflow_kubernetes_plugins.auth.core import (
     _authorize_request,
-    _CacheEntry,
     _canonicalize_path,
-    _find_authorization_rules,
     _is_unprotected_path,
-    _normalize_rules,
-    _override_run_user,
     _parse_jwt_subject,
     _parse_remote_groups,
     _RequestIdentity,
-    _reset_compiled_rules,
+)
+from mlflow_kubernetes_plugins.auth.middleware import _override_run_user
+from mlflow_kubernetes_plugins.auth.rules import (
+    PATH_AUTHORIZATION_RULES,
+    REQUEST_AUTHORIZATION_RULES,
+    AuthorizationRule,
+    _normalize_rules,
 )
 
 
@@ -317,7 +325,7 @@ def test_override_run_user_preserves_other_fields():
 
 
 def test_flask_create_run_request_processing(monkeypatch):
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     # Create a minimal Flask app with auth
     app = Flask(__name__)
@@ -353,11 +361,11 @@ def test_flask_create_run_request_processing(monkeypatch):
     )
     with (
         patch(
-            "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer.is_allowed",
+            "mlflow_kubernetes_plugins.auth.authorizer.KubernetesAuthorizer.is_allowed",
             return_value=True,
         ),
         patch(
-            "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+            "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
             return_value=fake_config,
         ),
     ):
@@ -367,7 +375,7 @@ def test_flask_create_run_request_processing(monkeypatch):
         client = app.test_client()
 
         with patch(
-            "mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="k8s-user"
+            "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="k8s-user"
         ):
             response = client.post(
                 "/api/2.0/mlflow/runs/create",
@@ -381,7 +389,7 @@ def test_flask_create_run_request_processing(monkeypatch):
 
 
 def _build_workspace_app(monkeypatch):
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     app = Flask(__name__)
 
@@ -398,11 +406,11 @@ def _build_workspace_app(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer.is_allowed",
+        "mlflow_kubernetes_plugins.auth.authorizer.KubernetesAuthorizer.is_allowed",
         lambda self, identity, resource, verb, namespace: True,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+        "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
         lambda: None,
     )
     monkeypatch.setenv("MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS", "300")
@@ -415,7 +423,7 @@ def test_list_workspaces_without_context(monkeypatch):
     client = _build_workspace_app(monkeypatch)
 
     with patch(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         return_value="k8s-user",
     ):
         response = client.get(
@@ -430,16 +438,16 @@ def test_list_workspaces_without_context(monkeypatch):
 def test_create_workspace_requests_are_denied(monkeypatch):
     mock_is_allowed = Mock(return_value=True)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer.is_allowed",
+        "mlflow_kubernetes_plugins.auth.authorizer.KubernetesAuthorizer.is_allowed",
         mock_is_allowed,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+        "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
         lambda: None,
     )
     monkeypatch.setenv("MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS", "300")
 
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     app = Flask(__name__)
 
@@ -452,7 +460,7 @@ def test_create_workspace_requests_are_denied(monkeypatch):
     client = app.test_client()
 
     with patch(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         return_value="k8s-user",
     ):
         response = client.post(
@@ -467,7 +475,7 @@ def test_create_workspace_requests_are_denied(monkeypatch):
 
 
 def _build_flask_auth_app(monkeypatch, *, is_allowed=True):
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     app = Flask(__name__)
 
@@ -489,10 +497,10 @@ def _build_flask_auth_app(monkeypatch, *, is_allowed=True):
 
     mock_is_allowed = Mock(return_value=is_allowed)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer.is_allowed", mock_is_allowed
+        "mlflow_kubernetes_plugins.auth.authorizer.KubernetesAuthorizer.is_allowed", mock_is_allowed
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration", lambda: None
+        "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration", lambda: None
     )
     monkeypatch.setenv("MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS", "300")
 
@@ -528,7 +536,7 @@ def test_invalid_bearer_scheme_returns_401(monkeypatch):
 def test_forwarded_access_token_header_allows_request(monkeypatch):
     client, mock_is_allowed = _build_flask_auth_app(monkeypatch)
 
-    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="k8s-user"):
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="k8s-user"):
         response = client.post(
             "/api/2.0/mlflow/runs/create",
             json={"experiment_id": "0"},
@@ -545,7 +553,7 @@ def test_forwarded_access_token_header_allows_request(monkeypatch):
 def test_invalid_authorization_header_with_forwarded_token(monkeypatch):
     client, mock_is_allowed = _build_flask_auth_app(monkeypatch)
 
-    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="k8s-user"):
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="k8s-user"):
         response = client.post(
             "/api/2.0/mlflow/runs/create",
             json={"experiment_id": "0"},
@@ -565,7 +573,7 @@ def test_invalid_authorization_header_with_forwarded_token(monkeypatch):
 def test_permission_denied_returns_403(monkeypatch):
     client, mock_is_allowed = _build_flask_auth_app(monkeypatch, is_allowed=False)
 
-    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="k8s-user"):
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="k8s-user"):
         response = client.post(
             "/api/2.0/mlflow/runs/create",
             json={"experiment_id": "0"},
@@ -586,11 +594,11 @@ def test_workspace_scope_string_is_normalized(monkeypatch):
     authorizer.is_allowed.return_value = True
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [AuthorizationRule("list", resource="experiments")],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -622,11 +630,11 @@ def test_workspace_listing_allows_missing_context(monkeypatch):
         requires_workspace=False,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -652,7 +660,7 @@ def test_unmapped_endpoint_returns_not_found(monkeypatch):
     authorizer = Mock()
     authorizer.is_allowed.return_value = True
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: None,
     )
 
@@ -680,7 +688,7 @@ def test_subject_access_review_mode_uses_remote_headers(monkeypatch):
     authorizer.is_allowed.return_value = True
     rule = AuthorizationRule("list", resource=RESOURCE_EXPERIMENTS)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
 
@@ -711,7 +719,7 @@ def test_subject_access_review_mode_requires_user_header(monkeypatch):
     authorizer = Mock()
     rule = AuthorizationRule("get", resource=RESOURCE_EXPERIMENTS)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
 
@@ -741,11 +749,11 @@ def test_gateway_endpoint_create_requires_model_definition_use(monkeypatch):
     authorizer.is_allowed.side_effect = [True, False]
     rule = AuthorizationRule("create", resource=RESOURCE_GATEWAY_ENDPOINTS)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -787,11 +795,11 @@ def test_gateway_endpoint_update_requires_model_definition_use(monkeypatch):
     authorizer.is_allowed.side_effect = [True, False]
     rule = AuthorizationRule("update", resource=RESOURCE_GATEWAY_ENDPOINTS)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -832,11 +840,11 @@ def test_gateway_model_definition_create_requires_secret_use(monkeypatch):
     authorizer.is_allowed.side_effect = [True, False]
     rule = AuthorizationRule("create", resource=RESOURCE_GATEWAY_MODEL_DEFINITIONS)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -877,11 +885,11 @@ def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
     authorizer.is_allowed.side_effect = [True, False]
     rule = AuthorizationRule("update", resource=RESOURCE_GATEWAY_MODEL_DEFINITIONS)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -921,11 +929,11 @@ def test_workspace_scope_falls_back_to_view_args(monkeypatch):
     authorizer.can_access_workspace.return_value = True
     rule = AuthorizationRule(None, requires_workspace=False, workspace_access_check=True)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -955,11 +963,11 @@ def test_workspace_create_requests_are_denied(monkeypatch):
     authorizer = Mock()
     rule = AuthorizationRule("create", deny=True, requires_workspace=False)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._find_authorization_rules",
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
         lambda path, method, **kwargs: [rule],
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
     )
 
@@ -989,7 +997,7 @@ def test_workspace_create_requests_are_denied(monkeypatch):
 
 
 def test_compile_rules_raise_for_uncovered_endpoint(monkeypatch):
-    import mlflow_kubernetes_plugins.auth as auth_mod
+    import mlflow_kubernetes_plugins.auth.compiler as auth_mod
 
     monkeypatch.setenv("K8S_AUTH_TEST_SKIP_COMPILE", "1")
 
@@ -1001,9 +1009,9 @@ def test_compile_rules_raise_for_uncovered_endpoint(monkeypatch):
 
         return [("/api/2.0/mlflow/uncovered", _handler, ["GET"])]
 
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.get_endpoints", _fake_endpoints)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.compiler.get_endpoints", _fake_endpoints)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.mlflow_app.url_map.iter_rules",
+        "mlflow_kubernetes_plugins.auth.compiler.mlflow_app.url_map.iter_rules",
         lambda: [],
     )
 
@@ -1097,7 +1105,7 @@ def test_server_info_endpoints_are_unprotected():
 
 
 def test_flask_script_name_prefix_is_stripped_before_rule_matching(monkeypatch):
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     app = Flask(__name__)
 
@@ -1106,7 +1114,7 @@ def test_flask_script_name_prefix_is_stripped_before_rule_matching(monkeypatch):
         return {"status": "ok"}
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+        "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
         lambda: None,
     )
     monkeypatch.setenv("MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS", "300")
@@ -1162,7 +1170,7 @@ def test_authorization_cache_does_not_drop_new_entries_during_cleanup():
 
 def test_experiment_permissions_are_checked_first(monkeypatch):
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+        "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
         lambda: SimpleNamespace(
             host=None,
             ssl_ca_cert=None,
@@ -1193,7 +1201,7 @@ def test_experiment_permissions_are_checked_first(monkeypatch):
 
 def test_can_access_workspace_iterates_priority_resources(monkeypatch):
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+        "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
         lambda: SimpleNamespace(
             host=None,
             ssl_ca_cert=None,
