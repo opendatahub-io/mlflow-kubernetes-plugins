@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 import pytest
 from kubernetes.client.exceptions import ApiException
 from mlflow.exceptions import MlflowException
-from mlflow_kubernetes_plugins.provider import (
+from mlflow_kubernetes_plugins.workspace_plugin.caches import MlflowConfigCache
+from mlflow_kubernetes_plugins.workspace_plugin.provider import (
     KubernetesWorkspaceProvider,
-    MlflowConfigCache,
     create_kubernetes_workspace_store,
 )
 
@@ -36,23 +36,23 @@ def mock_apis(monkeypatch):
     mock_custom = MagicMock()
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.config.load_kube_config",
+        "mlflow_kubernetes_plugins.workspace_plugin.provider.config.load_kube_config",
         lambda: None,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.config.load_incluster_config",
+        "mlflow_kubernetes_plugins.workspace_plugin.provider.config.load_incluster_config",
         lambda: None,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.client.CoreV1Api",
+        "mlflow_kubernetes_plugins.workspace_plugin.provider.client.CoreV1Api",
         lambda: mock_core,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.client.CustomObjectsApi",
+        "mlflow_kubernetes_plugins.workspace_plugin.provider.client.CustomObjectsApi",
         lambda: mock_custom,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
         lambda: _FakeWatch(),
     )
 
@@ -212,7 +212,7 @@ def test_mlflow_config_cache_loads_configs(monkeypatch):
     }
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
         lambda: _FakeWatch(),
     )
 
@@ -238,7 +238,7 @@ def test_mlflow_config_cache_returns_none_for_unknown_namespace(monkeypatch):
     }
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
         lambda: _FakeWatch(),
     )
 
@@ -252,7 +252,7 @@ def test_mlflow_config_cache_handles_crd_not_installed(monkeypatch):
     mock_api.list_cluster_custom_object.side_effect = ApiException(status=404)
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
         lambda: _FakeWatch(),
     )
 
@@ -267,7 +267,7 @@ def test_mlflow_config_cache_handles_permission_denied(monkeypatch):
     mock_api.list_cluster_custom_object.side_effect = ApiException(status=403)
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
         lambda: _FakeWatch(),
     )
 
@@ -286,7 +286,7 @@ def test_mlflow_config_cache_reloads_immediately_when_crd_installed(monkeypatch)
     mock_api.list_cluster_custom_object.side_effect = ApiException(status=404)
 
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.provider.watch.Watch",
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
         lambda: _FakeWatch(),
     )
 
