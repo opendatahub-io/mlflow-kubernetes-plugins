@@ -44,10 +44,10 @@ Documentation = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins/tre
 dev = ["pytest>=7.4", "pytest-mock>=3.10", "httpx>=0.27.0", "ruff", "build"]
 
 [project.entry-points."mlflow.workspace_provider"]
-kubernetes = "mlflow_kubernetes_plugins.provider:create_kubernetes_workspace_store"
+kubernetes = "mlflow_kubernetes_plugins.workspace_plugin.provider:create_kubernetes_workspace_store"
 
 [project.entry-points."mlflow.app"]
-kubernetes-auth = "mlflow_kubernetes_plugins.auth:create_app"
+kubernetes-auth = "mlflow_kubernetes_plugins.auth.middleware:create_app"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -67,5 +67,3 @@ src = ["mlflow_kubernetes_plugins", "tests"]
 [tool.ruff.lint]
 extend-select = ["I"]
 
-[tool.ruff.lint.per-file-ignores]
-"mlflow_kubernetes_plugins/auth.py" = ["E402"]

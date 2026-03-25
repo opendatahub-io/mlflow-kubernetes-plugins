@@ -9,9 +9,7 @@ from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import parse_qs, urlparse
 
-# Keep `watch` re-exported here because tests patch `provider.watch.Watch`, and
-# `provider_caches` intentionally resolves its watcher through this module path.
-from kubernetes import client, config, watch  # noqa: F401
+from kubernetes import client, config
 from kubernetes.client import CoreV1Api, CustomObjectsApi
 from kubernetes.client.exceptions import ApiException
 from kubernetes.config.config_exception import ConfigException
@@ -26,7 +24,7 @@ from mlflow.protos.databricks_pb2 import (
 from mlflow.store.workspace.abstract_store import AbstractStore
 from mlflow.utils.uri import append_to_uri_path
 
-from mlflow_kubernetes_plugins.provider_caches import (
+from mlflow_kubernetes_plugins.workspace_plugin.caches import (
     MlflowConfigCache,
     NamespaceCache,
 )

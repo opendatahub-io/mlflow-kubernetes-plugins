@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
+from kubernetes import watch
 from kubernetes.client import CoreV1Api, CustomObjectsApi
 from kubernetes.client.exceptions import ApiException
 from mlflow.exceptions import MlflowException
@@ -19,12 +20,6 @@ DEFAULT_DESCRIPTION_ANNOTATION = "mlflow.kubeflow.org/workspace-description"
 MLFLOW_CONFIG_GROUP = "mlflow.kubeflow.org"
 MLFLOW_CONFIG_VERSION = "v1"
 MLFLOW_CONFIG_PLURAL = "mlflowconfigs"
-
-
-def _provider_watch():
-    import mlflow_kubernetes_plugins.provider as provider_mod
-
-    return provider_mod.watch.Watch()
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +124,7 @@ class NamespaceCache:
                     time.sleep(2)
                     continue
 
-            watcher = _provider_watch()
+            watcher = watch.Watch()
             try:
                 for event in watcher.stream(
                     self._api.list_namespace,
@@ -343,7 +338,7 @@ class MlflowConfigCache:
             if not self._crd_available:
                 continue
 
-            watcher = _provider_watch()
+            watcher = watch.Watch()
             try:
                 for event in watcher.stream(
                     self._api.list_cluster_custom_object,
