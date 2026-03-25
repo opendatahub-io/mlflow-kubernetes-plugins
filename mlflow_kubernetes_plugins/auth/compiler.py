@@ -10,7 +10,17 @@ from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
 from mlflow.server import app as mlflow_app
 from mlflow.server import handlers as mlflow_handlers
+from mlflow.server.handlers import get_endpoints
 
+import mlflow_kubernetes_plugins.auth.core as core_mod
+from mlflow_kubernetes_plugins.auth.core import (
+    _canonicalize_path,
+    _fastapi_path_to_template,
+    _is_unprotected_path,
+    _re_compile_path,
+    _templated_path_to_probe,
+    _unwrap_handler,
+)
 from mlflow_kubernetes_plugins.auth.graphql import (
     determine_graphql_rules as _determine_graphql_rules,
 )
@@ -30,12 +40,6 @@ _HANDLER_RULES: dict[object, list[AuthorizationRule]] = {}
 _RULES_COMPILED = False
 
 
-def _auth_module():
-    import mlflow_kubernetes_plugins.auth as auth_mod
-
-    return auth_mod
-
-
 def _reset_compiled_rules() -> None:
     global _RULES_COMPILED
 
@@ -50,8 +54,6 @@ def _compile_authorization_rules() -> None:
     if _RULES_COMPILED:
         return
 
-    auth_mod = _auth_module()
-
     # Rebuild every cache/artifact so reconfiguration (e.g., during tests) is deterministic.
     _HANDLER_RULES.clear()
 
@@ -65,19 +67,19 @@ def _compile_authorization_rules() -> None:
         handler = mlflow_handlers.get_handler(request_class)
         value = REQUEST_AUTHORIZATION_RULES.get(request_class)
         if handler is not None and value is not None:
-            _HANDLER_RULES[auth_mod._unwrap_handler(handler)] = _normalize_rules(value)
+            _HANDLER_RULES[_unwrap_handler(handler)] = _normalize_rules(value)
         return handler
 
     # Inspect the protobuf-driven Flask routes and copy over authorization metadata.
-    for path, handler, methods in auth_mod.get_endpoints(_get_request_authorization_handler):
+    for path, handler, methods in get_endpoints(_get_request_authorization_handler):
         if not path:
             continue
 
-        canonical_path = auth_mod._canonicalize_path(raw_path=path)
-        if auth_mod._is_unprotected_path(canonical_path):
+        canonical_path = _canonicalize_path(raw_path=path)
+        if _is_unprotected_path(canonical_path):
             continue
 
-        base_handler = auth_mod._unwrap_handler(handler)
+        base_handler = _unwrap_handler(handler)
         rules = _HANDLER_RULES.get(base_handler)
         if rules is None:
             # If a protobuf route lacks a handler-derived rule, fall back to the explicit
@@ -93,7 +95,7 @@ def _compile_authorization_rules() -> None:
         for method in methods:
             # Regex patterns are required for templated paths; literal paths can be matched exactly.
             if "<" in canonical_path:
-                regex_rules.append((auth_mod._re_compile_path(canonical_path), method, rules))
+                regex_rules.append((_re_compile_path(canonical_path), method, rules))
             else:
                 exact_rules[(canonical_path, method)] = rules
 
@@ -103,11 +105,11 @@ def _compile_authorization_rules() -> None:
         if view_func is None:
             continue
 
-        canonical_path = auth_mod._canonicalize_path(raw_path=rule.rule)
-        if auth_mod._is_unprotected_path(canonical_path):
+        canonical_path = _canonicalize_path(raw_path=rule.rule)
+        if _is_unprotected_path(canonical_path):
             continue
 
-        base_handler = auth_mod._unwrap_handler(view_func)
+        base_handler = _unwrap_handler(view_func)
         if base_handler in _HANDLER_RULES:
             continue
 
@@ -125,7 +127,7 @@ def _compile_authorization_rules() -> None:
     for (path, method), path_value in PATH_AUTHORIZATION_RULES.items():
         normalized = _normalize_rules(path_value)
         if "<" in path:
-            regex_rules.append((auth_mod._re_compile_path(path), method, normalized))
+            regex_rules.append((_re_compile_path(path), method, normalized))
         else:
             exact_rules[(path, method)] = normalized
 
@@ -144,20 +146,19 @@ def _compile_authorization_rules() -> None:
 
 def _validate_fastapi_route_authorization(fastapi_app: FastAPI) -> None:
     """Ensure all protected FastAPI routes are covered by authorization rules."""
-    auth_mod = _auth_module()
     missing: list[tuple[str, str]] = []
 
     for route in getattr(fastapi_app, "routes", []):
         if not isinstance(route, APIRoute):
             continue
         methods = getattr(route, "methods", set()) or set()
-        canonical_path = auth_mod._canonicalize_path(raw_path=route.path or "")
-        if not canonical_path or auth_mod._is_unprotected_path(canonical_path):
+        canonical_path = _canonicalize_path(raw_path=route.path or "")
+        if not canonical_path or _is_unprotected_path(canonical_path):
             continue
-        template_path = auth_mod._fastapi_path_to_template(canonical_path)
+        template_path = _fastapi_path_to_template(canonical_path)
         # Use a concrete probe path so _find_authorization_rules follows the same regex path
         # matching logic that real requests do.
-        probe_path = auth_mod._templated_path_to_probe(template_path)
+        probe_path = _templated_path_to_probe(template_path)
 
         for method in methods:
             if method in {"HEAD", "OPTIONS"}:
@@ -178,8 +179,7 @@ def _find_authorization_rules(
     request_path: str, method: str, graphql_payload: dict[str, object] | None = None
 ) -> list[AuthorizationRule] | None:
     """Find authorization rules for a request."""
-    auth_mod = _auth_module()
-    canonical_path = auth_mod._canonicalize_path(raw_path=request_path or "")
+    canonical_path = _canonicalize_path(raw_path=request_path or "")
 
     rules = _AUTH_RULES.get((canonical_path, method))
     if rules is not None:
@@ -193,12 +193,12 @@ def _find_authorization_rules(
 
             query_string = payload.get("query", "")
             if not query_string:
-                auth_mod._logger.error("Could not determine GraphQL authorization: no query provided.")
+                core_mod._logger.error("Could not determine GraphQL authorization: no query provided.")
                 return None
 
             query_info = _extract_graphql_query_info(query_string)
             if not query_info.root_fields and not query_info.has_nested_model_registry_access:
-                auth_mod._logger.error(
+                core_mod._logger.error(
                     "Could not determine GraphQL authorization: query could not be "
                     "parsed or contained no recognized fields."
                 )

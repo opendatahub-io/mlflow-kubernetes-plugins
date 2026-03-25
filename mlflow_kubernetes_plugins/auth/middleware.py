@@ -8,14 +8,36 @@ import logging
 
 from fastapi import Request
 from flask import Flask, Response, g, request
+from mlflow.environment_variables import _MLFLOW_SGI_NAME
+from mlflow.exceptions import MlflowException
+from mlflow.protos import databricks_pb2
+from mlflow.server import app as mlflow_app
+from mlflow.server.fastapi_app import create_fastapi_app
+from mlflow.server.workspace_helpers import WORKSPACE_HEADER_NAME, resolve_workspace_from_header
+from mlflow.utils import workspace_context
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-
-def _auth_module():
-    import mlflow_kubernetes_plugins.auth as auth_mod
-
-    return auth_mod
+import mlflow_kubernetes_plugins.auth.core as core_mod
+from mlflow_kubernetes_plugins.auth.authorizer import KubernetesAuthConfig, KubernetesAuthorizer
+from mlflow_kubernetes_plugins.auth.compiler import (
+    _compile_authorization_rules,
+    _validate_fastapi_route_authorization,
+)
+from mlflow_kubernetes_plugins.auth.constants import WORKSPACE_REQUIRED_ERROR_MESSAGE
+from mlflow_kubernetes_plugins.auth.core import (
+    _AUTHORIZATION_HANDLED,
+    _authorize_request_context,
+    _canonicalize_path,
+    _is_unprotected_path,
+)
+from mlflow_kubernetes_plugins.auth.graphql import (
+    validate_graphql_field_authorization as _validate_graphql_field_authorization,
+)
+from mlflow_kubernetes_plugins.auth.request_context import (
+    build_fastapi_authorization_request,
+    build_flask_authorization_request,
+)
 
 
 class KubernetesAuthMiddleware(BaseHTTPMiddleware):
@@ -28,19 +50,18 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         """Process each request through the authorization pipeline."""
-        auth_mod = _auth_module()
-        authorization_token = auth_mod._AUTHORIZATION_HANDLED.set(None)
+        authorization_token = _AUTHORIZATION_HANDLED.set(None)
         try:
-            canonical_path = auth_mod._canonicalize_path(
+            canonical_path = _canonicalize_path(
                 raw_path=str(request.url.path or ""),
                 scope_path=request.scope.get("path"),
                 root_path=request.scope.get("root_path"),
             )
             fastapi_app = request.scope.get("app")
             if fastapi_app is None:
-                exc = auth_mod.MlflowException(
+                exc = MlflowException(
                     "FastAPI app missing from request scope.",
-                    error_code=auth_mod.databricks_pb2.INTERNAL_ERROR,
+                    error_code=databricks_pb2.INTERNAL_ERROR,
                 )
                 return JSONResponse(
                     status_code=exc.get_http_status_code(),
@@ -48,10 +69,10 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                 )
 
             # Skip authentication for unprotected paths
-            if auth_mod._is_unprotected_path(canonical_path):
+            if _is_unprotected_path(canonical_path):
                 return await call_next(request)
 
-            workspace_name = auth_mod.workspace_context.get_request_workspace()
+            workspace_name = workspace_context.get_request_workspace()
             workspace_set = False
 
             if workspace_name is None:
@@ -60,10 +81,8 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                 # also falls back to the configured default workspace when the header is missing
                 # or empty.
                 try:
-                    workspace = auth_mod.resolve_workspace_from_header(
-                        request.headers.get(auth_mod.WORKSPACE_HEADER_NAME)
-                    )
-                except auth_mod.MlflowException as exc:
+                    workspace = resolve_workspace_from_header(request.headers.get(WORKSPACE_HEADER_NAME))
+                except MlflowException as exc:
                     return JSONResponse(
                         status_code=exc.get_http_status_code(),
                         content=json.loads(exc.serialize_as_json()),
@@ -71,7 +90,7 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
 
                 if workspace is not None:
                     workspace_name = workspace.name
-                    auth_mod.workspace_context.set_server_request_workspace(workspace_name)
+                    workspace_context.set_server_request_workspace(workspace_name)
                     workspace_set = True
 
             if canonical_path.endswith("/graphql"):
@@ -80,11 +99,11 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                     return await call_next(request)
                 finally:
                     if workspace_set:
-                        auth_mod.workspace_context.clear_server_request_workspace()
+                        workspace_context.clear_server_request_workspace()
 
             try:
-                auth_result = auth_mod._authorize_request_context(
-                    auth_mod.build_fastapi_authorization_request(
+                auth_result = _authorize_request_context(
+                    build_fastapi_authorization_request(
                         request,
                         self.config_values,
                         path=canonical_path,
@@ -93,21 +112,19 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                     authorizer=self.authorizer,
                     config_values=self.config_values,
                 )
-                auth_mod._AUTHORIZATION_HANDLED.set(auth_result)
-            except auth_mod.MlflowException as exc:
+                _AUTHORIZATION_HANDLED.set(auth_result)
+            except MlflowException as exc:
                 if workspace_set:
-                    auth_mod.workspace_context.clear_server_request_workspace()
+                    workspace_context.clear_server_request_workspace()
                 if (
                     workspace_name is None
                     and exc.error_code
-                    == auth_mod.databricks_pb2.ErrorCode.Name(
-                        auth_mod.databricks_pb2.INVALID_PARAMETER_VALUE
-                    )
-                    and exc.message == auth_mod._WORKSPACE_REQUIRED_ERROR_MESSAGE
+                    == databricks_pb2.ErrorCode.Name(databricks_pb2.INVALID_PARAMETER_VALUE)
+                    and exc.message == WORKSPACE_REQUIRED_ERROR_MESSAGE
                 ):
-                    exc = auth_mod.MlflowException(
-                        auth_mod._WORKSPACE_REQUIRED_ERROR_MESSAGE,
-                        error_code=auth_mod.databricks_pb2.INTERNAL_ERROR,
+                    exc = MlflowException(
+                        WORKSPACE_REQUIRED_ERROR_MESSAGE,
+                        error_code=databricks_pb2.INTERNAL_ERROR,
                     )
                 return JSONResponse(
                     status_code=exc.get_http_status_code(),
@@ -119,10 +136,10 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                 response = await call_next(request)
             finally:
                 if workspace_set:
-                    auth_mod.workspace_context.clear_server_request_workspace()
+                    workspace_context.clear_server_request_workspace()
             return response
         finally:
-            auth_mod._AUTHORIZATION_HANDLED.reset(authorization_token)
+            _AUTHORIZATION_HANDLED.reset(authorization_token)
 
 
 def _override_run_user(username: str) -> None:
@@ -158,45 +175,44 @@ def _record_authorization_metadata(auth_result) -> None:
 
 def create_app(app: Flask | None = None):
     """Enable Kubernetes-based authorization for the MLflow tracking server."""
-    auth_mod = _auth_module()
     if app is None:
-        app = auth_mod.mlflow_app
+        app = mlflow_app
 
     parent_logger = getattr(app, "logger", logging.getLogger("mlflow"))
-    auth_mod._logger = parent_logger
-    auth_mod._logger.info("Kubernetes authorization plugin initialized")
+    core_mod._logger = parent_logger
+    core_mod._logger.info("Kubernetes authorization plugin initialized")
 
-    config_values = auth_mod.KubernetesAuthConfig.from_env()
-    authorizer = auth_mod.KubernetesAuthorizer(config_values=config_values)
+    config_values = KubernetesAuthConfig.from_env()
+    authorizer = KubernetesAuthorizer(config_values=config_values)
 
-    auth_mod._compile_authorization_rules()
+    _compile_authorization_rules()
 
     @app.before_request
     def _k8s_auth_before_request():
-        auth_result = auth_mod._AUTHORIZATION_HANDLED.get()
+        auth_result = _AUTHORIZATION_HANDLED.get()
         if auth_result is not None:
             _record_authorization_metadata(auth_result)
             return None
 
-        canonical_path = auth_mod._canonicalize_path(
+        canonical_path = _canonicalize_path(
             raw_path=request.path or "",
             path_info=request.environ.get("PATH_INFO"),
             script_name=request.environ.get("SCRIPT_NAME"),
         )
-        if auth_mod._is_unprotected_path(canonical_path):
+        if _is_unprotected_path(canonical_path):
             return None
 
         try:
-            auth_result = auth_mod._authorize_request_context(
-                auth_mod.build_flask_authorization_request(
+            auth_result = _authorize_request_context(
+                build_flask_authorization_request(
                     config_values,
                     path=canonical_path,
-                    workspace=auth_mod.workspace_context.get_request_workspace(),
+                    workspace=workspace_context.get_request_workspace(),
                 ),
                 authorizer=authorizer,
                 config_values=config_values,
             )
-        except auth_mod.MlflowException as exc:
+        except MlflowException as exc:
             response = Response(mimetype="application/json")
             response.set_data(exc.serialize_as_json())
             response.status_code = exc.get_http_status_code()
@@ -244,12 +260,12 @@ def create_app(app: Flask | None = None):
             ):
                 if hasattr(g, attr):
                     delattr(g, attr)
-            auth_mod._AUTHORIZATION_HANDLED.set(None)
+            _AUTHORIZATION_HANDLED.set(None)
 
         return response
 
-    if auth_mod._MLFLOW_SGI_NAME.get() == "uvicorn":
-        fastapi_app = auth_mod.create_fastapi_app(app)
+    if _MLFLOW_SGI_NAME.get() == "uvicorn":
+        fastapi_app = create_fastapi_app(app)
 
         # Add Kubernetes auth middleware to FastAPI
         # Important: This must be added AFTER security middleware but BEFORE routes
@@ -263,8 +279,8 @@ def create_app(app: Flask | None = None):
             authorizer=authorizer,
             config_values=config_values,
         )
-        auth_mod._validate_fastapi_route_authorization(fastapi_app)
-        auth_mod._validate_graphql_field_authorization()
+        _validate_fastapi_route_authorization(fastapi_app)
+        _validate_graphql_field_authorization()
         return fastapi_app
     return app
 

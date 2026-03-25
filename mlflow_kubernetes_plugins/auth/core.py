@@ -14,50 +14,20 @@ from hashlib import sha256
 
 import werkzeug
 from flask import has_request_context, request
-from mlflow.environment_variables import _MLFLOW_SGI_NAME  # noqa: F401
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
-from mlflow.server import app as mlflow_app  # noqa: F401
-from mlflow.server.fastapi_app import create_fastapi_app  # noqa: F401
-from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR, get_endpoints  # noqa: F401
-from mlflow.server.workspace_helpers import (
-    WORKSPACE_HEADER_NAME,  # noqa: F401
-    resolve_workspace_from_header,  # noqa: F401
-)
-from mlflow.utils import workspace_context  # noqa: F401
+from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR
 
-# Re-export selected names here so tests, entrypoints, and existing import paths continue to
-# resolve through `mlflow_kubernetes_plugins.auth` while the implementation is split across
-# package modules.
 from mlflow_kubernetes_plugins.auth.authorizer import (
     AuthorizationMode,
     KubernetesAuthConfig,
     KubernetesAuthorizer,
-    _AuthorizationCache,  # noqa: F401
-    _CacheEntry,  # noqa: F401
-    _create_api_client_for_subject_access_reviews,  # noqa: F401
-    _load_kubernetes_configuration,  # noqa: F401
-)
-from mlflow_kubernetes_plugins.auth.compiler import (
-    _compile_authorization_rules,  # noqa: F401
-    _find_authorization_rules,
-    _reset_compiled_rules,  # noqa: F401
-    _validate_fastapi_route_authorization,  # noqa: F401
 )
 from mlflow_kubernetes_plugins.auth.constants import (
-    AUTHORIZATION_MODE_ENV,  # noqa: F401
-    DEFAULT_REMOTE_GROUPS_HEADER,  # noqa: F401
     DEFAULT_REMOTE_GROUPS_SEPARATOR,
-    DEFAULT_REMOTE_USER_HEADER,  # noqa: F401
-    REMOTE_GROUPS_HEADER_ENV,  # noqa: F401
-    REMOTE_USER_HEADER_ENV,  # noqa: F401
-    RESOURCE_ASSISTANTS,  # noqa: F401
-    RESOURCE_DATASETS,  # noqa: F401
-    RESOURCE_EXPERIMENTS,  # noqa: F401
     RESOURCE_GATEWAY_ENDPOINTS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
-    RESOURCE_REGISTERED_MODELS,  # noqa: F401
 )
 from mlflow_kubernetes_plugins.auth.constants import (
     UNPROTECTED_PATH_PREFIXES as _UNPROTECTED_PATH_PREFIXES,
@@ -73,36 +43,13 @@ from mlflow_kubernetes_plugins.auth.constants import (
 )
 from mlflow_kubernetes_plugins.auth.request_context import (
     AuthorizationRequest,
-    build_fastapi_authorization_request,  # noqa: F401
-    build_flask_authorization_request,  # noqa: F401
 )
 from mlflow_kubernetes_plugins.auth.rules import (
-    GRAPHQL_OPERATION_RULES,  # noqa: F401
-    PATH_AUTHORIZATION_RULES,  # noqa: F401
-    REQUEST_AUTHORIZATION_RULES,  # noqa: F401
     AuthorizationRule,
-    _normalize_rules,  # noqa: F401
 )
 
 if not hasattr(werkzeug, "__version__"):  # pragma: no cover - compatibility shim
     werkzeug.__version__ = "werkzeug"
-
-# Re-export GraphQL constants from auth_graphql module
-from mlflow_kubernetes_plugins.auth.graphql import (
-    GRAPHQL_FIELD_RESOURCE_MAP,
-    GRAPHQL_FIELD_VERB_MAP,
-    K8S_GRAPHQL_OPERATION_RESOURCE_MAP,
-    K8S_GRAPHQL_OPERATION_VERB_MAP,
-    _build_graphql_operation_rules,  # noqa: F401
-)
-from mlflow_kubernetes_plugins.auth.graphql import (
-    validate_graphql_field_authorization as _validate_graphql_field_authorization,  # noqa: F401
-)
-from mlflow_kubernetes_plugins.auth.middleware import (
-    KubernetesAuthMiddleware,  # noqa: F401
-    _override_run_user,  # noqa: F401
-    create_app,
-)
 
 _logger = logging.getLogger(__name__)
 _AUTHORIZATION_HANDLED: ContextVar[_AuthorizationResult | None] = ContextVar(
@@ -478,6 +425,8 @@ def _authorize_request_context(
     if isinstance(request_context.workspace, str):
         workspace_name = request_context.workspace.strip() or None
 
+    from mlflow_kubernetes_plugins.auth.compiler import _find_authorization_rules
+
     rules = _find_authorization_rules(
         request_context.path,
         request_context.method,
@@ -587,9 +536,28 @@ def _authorize_request(
 
 
 __all__ = [
-    "create_app",
-    "GRAPHQL_FIELD_RESOURCE_MAP",
-    "GRAPHQL_FIELD_VERB_MAP",
-    "K8S_GRAPHQL_OPERATION_RESOURCE_MAP",
-    "K8S_GRAPHQL_OPERATION_VERB_MAP",
+    "AuthorizationRequest",
+    "AuthorizationRule",
+    "KubernetesAuthConfig",
+    "KubernetesAuthorizer",
+    "_AUTHORIZATION_HANDLED",
+    "_AuthorizationResult",
+    "_RequestIdentity",
+    "_authorize_request",
+    "_authorize_request_context",
+    "_canonicalize_path",
+    "_enforce_gateway_dependency_permissions",
+    "_extract_workspace_scope_from_request",
+    "_fastapi_path_to_template",
+    "_get_static_prefix",
+    "_is_unprotected_path",
+    "_logger",
+    "_parse_jwt_subject",
+    "_parse_remote_groups",
+    "_re_compile_path",
+    "_resolve_bearer_token",
+    "_strip_prefix",
+    "_strip_static_prefix",
+    "_templated_path_to_probe",
+    "_unwrap_handler",
 ]

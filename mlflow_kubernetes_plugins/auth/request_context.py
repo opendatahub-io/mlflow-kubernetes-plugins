@@ -9,7 +9,7 @@ from fastapi import Request as FastAPIRequest
 from flask import request as flask_request
 
 if TYPE_CHECKING:
-    from mlflow_kubernetes_plugins.auth import KubernetesAuthConfig
+    from mlflow_kubernetes_plugins.auth.authorizer import KubernetesAuthConfig
 
 
 @dataclass(frozen=True)

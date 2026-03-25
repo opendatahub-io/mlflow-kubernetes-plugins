@@ -16,16 +16,20 @@ from mlflow.exceptions import MlflowException
 from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
 from mlflow.utils import workspace_context
 from mlflow.utils.workspace_utils import WORKSPACE_HEADER_NAME
-from mlflow_kubernetes_plugins.auth import (
+from mlflow_kubernetes_plugins.auth.authorizer import (
+    AuthorizationMode,
+    KubernetesAuthConfig,
+    KubernetesAuthorizer,
+)
+from mlflow_kubernetes_plugins.auth.compiler import _validate_fastapi_route_authorization
+from mlflow_kubernetes_plugins.auth.constants import (
     DEFAULT_REMOTE_GROUPS_HEADER,
     DEFAULT_REMOTE_GROUPS_SEPARATOR,
     DEFAULT_REMOTE_USER_HEADER,
+)
+from mlflow_kubernetes_plugins.auth.middleware import KubernetesAuthMiddleware
+from mlflow_kubernetes_plugins.auth.rules import (
     PATH_AUTHORIZATION_RULES,
-    AuthorizationMode,
-    KubernetesAuthConfig,
-    KubernetesAuthMiddleware,
-    KubernetesAuthorizer,
-    _validate_fastapi_route_authorization,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -220,7 +224,7 @@ def test_otel_endpoint_requires_workspace_header(fastapi_app_with_k8s_auth):
 def test_otel_endpoint_with_valid_auth(fastapi_app_with_k8s_auth, mock_authorizer):
     client = TestClient(fastapi_app_with_k8s_auth)
 
-    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="test-user"):
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="test-user"):
         response = client.post(
             OTLP_TRACES_PATH,
             headers={
@@ -420,7 +424,7 @@ def test_job_api_endpoints_require_auth(fastapi_app_with_k8s_auth, mock_authoriz
     )
 
     mock_authorizer.reset_mock()
-    with patch("mlflow_kubernetes_plugins.auth._parse_jwt_subject", return_value="test-user"):
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="test-user"):
         response = client.get(
             "/ajax-api/3.0/jobs/123",
             headers={
@@ -486,7 +490,7 @@ def test_job_api_endpoints_prefer_forwarded_token_on_invalid_authorization(
 def test_graphql_flask_authorizes_when_fastapi_defers(
     mock_authorizer, mock_config, monkeypatch
 ) -> None:
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     flask_app = Flask(__name__)
 
@@ -508,11 +512,11 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
     )
     with (
         patch(
-            "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer.is_allowed",
+            "mlflow_kubernetes_plugins.auth.authorizer.KubernetesAuthorizer.is_allowed",
             return_value=True,
         ) as flask_is_allowed,
         patch(
-            "mlflow_kubernetes_plugins.auth._load_kubernetes_configuration",
+            "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
             return_value=fake_k8s_config,
         ),
     ):
@@ -545,7 +549,7 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
         client = TestClient(fastapi_app)
         query = '{ mlflowGetExperiment(input: { experimentId: "123" }) { experiment { name } } }'
         with patch(
-            "mlflow_kubernetes_plugins.auth._parse_jwt_subject",
+            "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
             return_value="test-user",
         ):
             response = client.post(
@@ -575,7 +579,7 @@ def test_job_api_missing_workspace_context_returns_error(
         config_values=mock_config,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.resolve_workspace_from_header",
+        "mlflow_kubernetes_plugins.auth.middleware.resolve_workspace_from_header",
         lambda _header: None,
     )
 
@@ -612,7 +616,7 @@ def test_fastapi_route_validation_fails_for_missing_rule():
 
 
 def test_create_app_wraps_flask_with_fastapi_under_uvicorn(monkeypatch):
-    from mlflow_kubernetes_plugins.auth import create_app
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     flask_app = Flask(__name__)
     fastapi_app = Mock()
@@ -621,20 +625,20 @@ def test_create_app_wraps_flask_with_fastapi_under_uvicorn(monkeypatch):
     authorizer = Mock(spec=KubernetesAuthorizer)
     config_values = Mock(spec=KubernetesAuthConfig)
 
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth._compile_authorization_rules", lambda: None)
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.create_fastapi_app", lambda app: fastapi_app)
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth._validate_fastapi_route_authorization", validate_fastapi_routes)
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth._validate_graphql_field_authorization", validate_graphql)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware._compile_authorization_rules", lambda: None)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware.create_fastapi_app", lambda app: fastapi_app)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware._validate_fastapi_route_authorization", validate_fastapi_routes)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware._validate_graphql_field_authorization", validate_graphql)
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.KubernetesAuthConfig.from_env",
+        "mlflow_kubernetes_plugins.auth.middleware.KubernetesAuthConfig.from_env",
         lambda: config_values,
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.KubernetesAuthorizer",
+        "mlflow_kubernetes_plugins.auth.middleware.KubernetesAuthorizer",
         lambda config_values: authorizer,
     )
 
-    with patch("mlflow_kubernetes_plugins.auth._MLFLOW_SGI_NAME.get", return_value="uvicorn"):
+    with patch("mlflow_kubernetes_plugins.auth.middleware._MLFLOW_SGI_NAME.get", return_value="uvicorn"):
         result = create_app(flask_app)
 
     assert result is fastapi_app

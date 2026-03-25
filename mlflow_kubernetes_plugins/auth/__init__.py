@@ -1,12 +1,21 @@
-"""Compatibility package for the MLflow Kubernetes auth plugin."""
+"""Kubernetes authorization plugin package."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from mlflow_kubernetes_plugins.auth.authorizer import (
+    AuthorizationMode,
+    KubernetesAuthConfig,
+    KubernetesAuthorizer,
+)
+from mlflow_kubernetes_plugins.auth.middleware import (
+    KubernetesAuthMiddleware,
+    create_app,
+)
 
-_LEGACY_MODULE_PATH = Path(__file__).resolve().parent.parent / "auth.py"
-
-# During the package split, execute the legacy module inside this package namespace so
-# imports, monkeypatching, and module-level caches still behave as if
-# `mlflow_kubernetes_plugins.auth` were a single module.
-exec(compile(_LEGACY_MODULE_PATH.read_text(encoding="utf-8"), str(_LEGACY_MODULE_PATH), "exec"))
+__all__ = [
+    "AuthorizationMode",
+    "KubernetesAuthConfig",
+    "KubernetesAuthorizer",
+    "KubernetesAuthMiddleware",
+    "create_app",
+]

@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from mlflow_kubernetes_plugins.auth import create_app
+from mlflow_kubernetes_plugins.auth.middleware import create_app
 from mlflow_kubernetes_plugins.provider import (
     KubernetesWorkspaceProvider,
     create_kubernetes_workspace_store,
