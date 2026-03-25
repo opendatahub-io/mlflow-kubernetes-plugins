@@ -50,10 +50,10 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check .
+        run: make python-lint
 
       - name: Run tests
-        run: pytest
+        run: make python-test
 
   build:
     runs-on: ubuntu-latest

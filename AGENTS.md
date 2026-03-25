@@ -7,4 +7,4 @@
 - For auth coverage, preserve the explicit 1x1 mapping from MLflow endpoint to authorization requirement. Missing protected endpoint coverage should still fail at startup rather than falling back dynamically.
 - In auth rule tables, readability and auditability are more important than deduplication. Keep duplicated literal route entries when that makes endpoint coverage clearer.
 - GraphQL authorization must remain query-driven. Do not rely on `operationName` alone for authorization decisions.
-- Before finishing, run `ruff check .`, `pytest`, and `python -m build` from the repository root when possible.
+- Before finishing, run `make python-lint`, `make python-test`, and `python -m build` from the repository root when possible.
