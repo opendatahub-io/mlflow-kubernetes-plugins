@@ -671,7 +671,7 @@ def test_unmapped_endpoint_returns_not_found(monkeypatch):
 
     config = KubernetesAuthConfig()
 
-    with pytest.raises(MlflowException, match="Endpoint not found.") as exc:
+    with pytest.raises(MlflowException, match=r"Endpoint not found\.") as exc:
         _authorize_request(
             AuthorizationRequest(
                 authorization_header="Bearer missing-rule-token",
@@ -1122,6 +1122,7 @@ def test_misc_path_authorization_rules_cover_recent_endpoints():
 
 
 def test_server_info_endpoints_are_unprotected():
+    assert _is_unprotected_path("/server-info")
     assert _is_unprotected_path("/api/3.0/mlflow/server-info")
     assert _is_unprotected_path("/ajax-api/3.0/mlflow/server-info")
     assert _is_unprotected_path("/ajax-api/3.0/mlflow/ui-telemetry")
@@ -1266,6 +1267,23 @@ def test_can_access_workspace_iterates_priority_resources(monkeypatch):
         RESOURCE_GATEWAY_ENDPOINTS,
         RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     ]
+
+
+def test_subject_access_review_authorizer_close_is_idempotent(monkeypatch):
+    fake_client = Mock()
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.authorizer._create_api_client_for_subject_access_reviews",
+        lambda: fake_client,
+    )
+
+    authorizer = KubernetesAuthorizer(
+        KubernetesAuthConfig(authorization_mode=AuthorizationMode.SUBJECT_ACCESS_REVIEW)
+    )
+
+    authorizer.close()
+    authorizer.close()
+
+    fake_client.close.assert_called_once()
 
 
 def test_normalize_rules_single_rule():

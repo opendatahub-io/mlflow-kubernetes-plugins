@@ -34,7 +34,7 @@ mlflow server \
 | `MLFLOW_K8S_AUTH_AUTHORIZATION_MODE` | `self_subject_access_review` | Selects direct-token or trusted-proxy authorization mode. |
 | `MLFLOW_K8S_AUTH_REMOTE_USER_HEADER` | `x-remote-user` | Username header used in trusted-proxy mode. |
 | `MLFLOW_K8S_AUTH_REMOTE_GROUPS_HEADER` | `x-remote-groups` | Groups header used in trusted-proxy mode. |
-| `MLFLOW_K8S_AUTH_REMOTE_GROUPS_SEPARATOR` | `|` | Separator used to split the groups header. |
+| `MLFLOW_K8S_AUTH_REMOTE_GROUPS_SEPARATOR` | `\|` | Separator used to split the groups header. |
 
 ## Authorization Modes
 

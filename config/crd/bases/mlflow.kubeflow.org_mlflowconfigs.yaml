@@ -52,7 +52,13 @@ spec:
                     artifactRootSecret: "mlflow-artifact-connection"  # Contains bucket: ds-team-bucket
                     artifactRootPath: "experiments"
                     resolved artifact root: s3://ds-team-bucket/experiments
+                maxLength: 512
                 type: string
+                x-kubernetes-validations:
+                - message: artifactRootPath must be relative
+                  rule: self == '' || !self.startsWith('/')
+                - message: artifactRootPath must not contain '..' path segments
+                  rule: self == '' || !self.matches('(^|.*/)\.\.(|/.*)$')
               artifactRootSecret:
                 description: |-
                   ArtifactRootSecret is the name of a Secret in this namespace that contains

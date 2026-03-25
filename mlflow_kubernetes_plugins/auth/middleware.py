@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import io
 import json
 import logging
@@ -184,6 +185,7 @@ def create_app(app: Flask | None = None):
 
     config_values = KubernetesAuthConfig.from_env()
     authorizer = KubernetesAuthorizer(config_values=config_values)
+    atexit.register(authorizer.close)
 
     _compile_authorization_rules()
 

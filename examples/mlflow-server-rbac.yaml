@@ -11,6 +11,7 @@ rules:
     verbs: ["list", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]
+    # MLflowConfig fixes spec.artifactRootSecret to "mlflow-artifact-connection".
     resourceNames: ["mlflow-artifact-connection"]
     verbs: ["get"]
   - apiGroups: ["authorization.k8s.io"]

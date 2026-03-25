@@ -21,6 +21,7 @@ UNPROTECTED_PATHS = {
     "/",
     "/health",
     "/version",
+    "/server-info",
     "/metrics",
     "/api/3.0/mlflow/server-info",
     "/ajax-api/3.0/mlflow/server-info",

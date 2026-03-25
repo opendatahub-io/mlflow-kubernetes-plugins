@@ -54,5 +54,7 @@ Then send the token with the workspace header:
 curl \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "X-MLFLOW-WORKSPACE: team-a" \
-  http://mlflow.example/api/2.0/mlflow/runs/search
+  https://mlflow.example/api/2.0/mlflow/runs/search
 ```
+
+Use plain HTTP only for local-only testing such as `localhost` or a `kubectl port-forward`.

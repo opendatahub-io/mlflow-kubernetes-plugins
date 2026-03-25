@@ -175,6 +175,19 @@ class KubernetesAuthorizer:
         else:
             self._sar_api_client = _create_api_client_for_subject_access_reviews()
 
+    def close(self) -> None:
+        api_client = self._sar_api_client
+        if api_client is None:
+            return
+        self._sar_api_client = None
+        api_client.close()
+
+    def __enter__(self) -> "KubernetesAuthorizer":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
     def _build_api_client_with_token(self, token: str) -> client.ApiClient:
         if self._base_configuration is None:
             raise MlflowException(
