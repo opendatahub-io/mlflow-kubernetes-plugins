@@ -27,7 +27,7 @@ from mlflow_kubernetes_plugins.auth.compiler import (
 from mlflow_kubernetes_plugins.auth.constants import WORKSPACE_REQUIRED_ERROR_MESSAGE
 from mlflow_kubernetes_plugins.auth.core import (
     _AUTHORIZATION_HANDLED,
-    _authorize_request_context,
+    _authorize_request,
     _canonicalize_path,
     _is_unprotected_path,
 )
@@ -102,7 +102,7 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                         workspace_context.clear_server_request_workspace()
 
             try:
-                auth_result = _authorize_request_context(
+                auth_result = _authorize_request(
                     build_fastapi_authorization_request(
                         request,
                         self.config_values,
@@ -203,7 +203,7 @@ def create_app(app: Flask | None = None):
             return None
 
         try:
-            auth_result = _authorize_request_context(
+            auth_result = _authorize_request(
                 build_flask_authorization_request(
                     config_values,
                     path=canonical_path,

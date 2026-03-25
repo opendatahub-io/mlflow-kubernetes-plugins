@@ -69,6 +69,7 @@ from mlflow_kubernetes_plugins.auth.core import (
     _RequestIdentity,
 )
 from mlflow_kubernetes_plugins.auth.middleware import _override_run_user
+from mlflow_kubernetes_plugins.auth.request_context import AuthorizationRequest
 from mlflow_kubernetes_plugins.auth.rules import (
     PATH_AUTHORIZATION_RULES,
     REQUEST_AUTHORIZATION_RULES,
@@ -604,15 +605,17 @@ def test_workspace_scope_string_is_normalized(monkeypatch):
 
     config = KubernetesAuthConfig()
     result = _authorize_request(
-        authorization_header="Bearer valid-token",
-        forwarded_access_token=None,
-        remote_user_header_value=None,
-        remote_groups_header_value=None,
-        path="/ajax-api/2.0/mlflow/experiments/search",
-        method="GET",
+        AuthorizationRequest(
+            authorization_header="Bearer valid-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/ajax-api/2.0/mlflow/experiments/search",
+            method="GET",
+            workspace=" team-a ",
+        ),
         authorizer=authorizer,
         config_values=config,
-        workspace=" team-a ",
     )
 
     call_args = authorizer.is_allowed.call_args[0]
@@ -640,15 +643,17 @@ def test_workspace_listing_allows_missing_context(monkeypatch):
 
     config = KubernetesAuthConfig()
     result = _authorize_request(
-        authorization_header="Bearer list-token",
-        forwarded_access_token=None,
-        remote_user_header_value=None,
-        remote_groups_header_value=None,
-        path="/api/3.0/mlflow/workspaces",
-        method="GET",
+        AuthorizationRequest(
+            authorization_header="Bearer list-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/workspaces",
+            method="GET",
+            workspace=None,
+        ),
         authorizer=authorizer,
         config_values=config,
-        workspace=None,
     )
 
     assert result.username == "k8s-user"
@@ -668,15 +673,17 @@ def test_unmapped_endpoint_returns_not_found(monkeypatch):
 
     with pytest.raises(MlflowException, match="Endpoint not found.") as exc:
         _authorize_request(
-            authorization_header="Bearer missing-rule-token",
-            forwarded_access_token=None,
-            remote_user_header_value=None,
-            remote_groups_header_value=None,
-            path="/api/2.0/mlflow/unknown",
-            method="GET",
+            AuthorizationRequest(
+                authorization_header="Bearer missing-rule-token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/2.0/mlflow/unknown",
+                method="GET",
+                workspace="default",
+            ),
             authorizer=authorizer,
             config_values=config,
-            workspace="default",
         )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.ENDPOINT_NOT_FOUND)
@@ -695,15 +702,17 @@ def test_subject_access_review_mode_uses_remote_headers(monkeypatch):
     config = KubernetesAuthConfig(authorization_mode=AuthorizationMode.SUBJECT_ACCESS_REVIEW)
 
     result = _authorize_request(
-        authorization_header=None,
-        forwarded_access_token=None,
-        remote_user_header_value="proxy-user",
-        remote_groups_header_value="group-a|group-b",
-        path="/ajax-api/2.0/mlflow/experiments/search",
-        method="GET",
+        AuthorizationRequest(
+            authorization_header=None,
+            forwarded_access_token=None,
+            remote_user_header_value="proxy-user",
+            remote_groups_header_value="group-a|group-b",
+            path="/ajax-api/2.0/mlflow/experiments/search",
+            method="GET",
+            workspace="team-a",
+        ),
         authorizer=authorizer,
         config_values=config,
-        workspace="team-a",
     )
 
     identity, resource, verb, namespace, subresource = authorizer.is_allowed.call_args[0]
@@ -727,15 +736,17 @@ def test_subject_access_review_mode_requires_user_header(monkeypatch):
 
     with pytest.raises(MlflowException, match="Missing required") as exc:
         _authorize_request(
-            authorization_header=None,
-            forwarded_access_token=None,
-            remote_user_header_value=None,
-            remote_groups_header_value="group-a|group-b",
-            path="/ajax-api/2.0/mlflow/experiments/get",
-            method="GET",
+            AuthorizationRequest(
+                authorization_header=None,
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value="group-a|group-b",
+                path="/ajax-api/2.0/mlflow/experiments/get",
+                method="GET",
+                workspace="team-a",
+            ),
             authorizer=authorizer,
             config_values=config,
-            workspace="team-a",
         )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.UNAUTHENTICATED)
@@ -765,15 +776,17 @@ def test_gateway_endpoint_create_requires_model_definition_use(monkeypatch):
     ):
         with pytest.raises(MlflowException, match="Permission denied") as exc:
             _authorize_request(
-                authorization_header="Bearer token",
-                forwarded_access_token=None,
-                remote_user_header_value=None,
-                remote_groups_header_value=None,
-                path="/api/2.0/mlflow/gateway/endpoints/create",
-                method="POST",
+                AuthorizationRequest(
+                    authorization_header="Bearer token",
+                    forwarded_access_token=None,
+                    remote_user_header_value=None,
+                    remote_groups_header_value=None,
+                    path="/api/2.0/mlflow/gateway/endpoints/create",
+                    method="POST",
+                    workspace="team-a",
+                ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
-                workspace="team-a",
             )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
@@ -811,15 +824,17 @@ def test_gateway_endpoint_update_requires_model_definition_use(monkeypatch):
     ):
         with pytest.raises(MlflowException, match="Permission denied") as exc:
             _authorize_request(
-                authorization_header="Bearer token",
-                forwarded_access_token=None,
-                remote_user_header_value=None,
-                remote_groups_header_value=None,
-                path="/api/2.0/mlflow/gateway/endpoints/update",
-                method="PATCH",
+                AuthorizationRequest(
+                    authorization_header="Bearer token",
+                    forwarded_access_token=None,
+                    remote_user_header_value=None,
+                    remote_groups_header_value=None,
+                    path="/api/2.0/mlflow/gateway/endpoints/update",
+                    method="PATCH",
+                    workspace="team-a",
+                ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
-                workspace="team-a",
             )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
@@ -856,15 +871,17 @@ def test_gateway_model_definition_create_requires_secret_use(monkeypatch):
     ):
         with pytest.raises(MlflowException, match="Permission denied") as exc:
             _authorize_request(
-                authorization_header="Bearer token",
-                forwarded_access_token=None,
-                remote_user_header_value=None,
-                remote_groups_header_value=None,
-                path="/api/2.0/mlflow/gateway/model-definitions/create",
-                method="POST",
+                AuthorizationRequest(
+                    authorization_header="Bearer token",
+                    forwarded_access_token=None,
+                    remote_user_header_value=None,
+                    remote_groups_header_value=None,
+                    path="/api/2.0/mlflow/gateway/model-definitions/create",
+                    method="POST",
+                    workspace="team-a",
+                ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
-                workspace="team-a",
             )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
@@ -901,15 +918,17 @@ def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
     ):
         with pytest.raises(MlflowException, match="Permission denied") as exc:
             _authorize_request(
-                authorization_header="Bearer token",
-                forwarded_access_token=None,
-                remote_user_header_value=None,
-                remote_groups_header_value=None,
-                path="/api/2.0/mlflow/gateway/model-definitions/update",
-                method="PATCH",
+                AuthorizationRequest(
+                    authorization_header="Bearer token",
+                    forwarded_access_token=None,
+                    remote_user_header_value=None,
+                    remote_groups_header_value=None,
+                    path="/api/2.0/mlflow/gateway/model-definitions/update",
+                    method="PATCH",
+                    workspace="team-a",
+                ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
-                workspace="team-a",
             )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
@@ -940,15 +959,17 @@ def test_workspace_scope_falls_back_to_view_args(monkeypatch):
     with app.test_request_context("/api/3.0/mlflow/workspaces/team-a", method="GET"):
         request.view_args = {"workspace_name": "team-a"}
         _authorize_request(
-            authorization_header="Bearer scope-token",
-            forwarded_access_token=None,
-            remote_user_header_value=None,
-            remote_groups_header_value=None,
-            path="/api/3.0/mlflow/workspaces/team-a",
-            method="GET",
+            AuthorizationRequest(
+                authorization_header="Bearer scope-token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/3.0/mlflow/workspaces/team-a",
+                method="GET",
+                workspace=None,
+            ),
             authorizer=authorizer,
             config_values=KubernetesAuthConfig(),
-            workspace=None,
         )
 
     args = authorizer.can_access_workspace.call_args[0]
@@ -981,15 +1002,17 @@ def test_workspace_create_requests_are_denied(monkeypatch):
             MlflowException, match="Workspace create, update, and delete operations"
         ) as exc:
             _authorize_request(
-                authorization_header="Bearer create-token",
-                forwarded_access_token=None,
-                remote_user_header_value=None,
-                remote_groups_header_value=None,
-                path="/api/3.0/mlflow/workspaces",
-                method="POST",
+                AuthorizationRequest(
+                    authorization_header="Bearer create-token",
+                    forwarded_access_token=None,
+                    remote_user_header_value=None,
+                    remote_groups_header_value=None,
+                    path="/api/3.0/mlflow/workspaces",
+                    method="POST",
+                    workspace=None,
+                ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
-                workspace=None,
             )
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
