@@ -375,7 +375,7 @@ def _enforce_gateway_dependency_permissions(
             )
 
 
-def _authorize_request_context(
+def _authorize_request(
     request_context: AuthorizationRequest,
     *,
     authorizer: KubernetesAuthorizer,
@@ -506,35 +506,6 @@ def _authorize_request_context(
     return _AuthorizationResult(identity=identity, rules=rules, username=username)
 
 
-def _authorize_request(
-    *,
-    authorization_header: str | None,
-    forwarded_access_token: str | None,
-    remote_user_header_value: str | None,
-    remote_groups_header_value: str | None,
-    path: str,
-    method: str,
-    authorizer: KubernetesAuthorizer,
-    config_values: KubernetesAuthConfig,
-    workspace: str | None,
-    graphql_payload: dict[str, object] | None = None,
-) -> _AuthorizationResult:
-    return _authorize_request_context(
-        AuthorizationRequest(
-            authorization_header=authorization_header,
-            forwarded_access_token=forwarded_access_token,
-            remote_user_header_value=remote_user_header_value,
-            remote_groups_header_value=remote_groups_header_value,
-            path=path,
-            method=method,
-            workspace=workspace,
-            graphql_payload=graphql_payload,
-        ),
-        authorizer=authorizer,
-        config_values=config_values,
-    )
-
-
 __all__ = [
     "AuthorizationRequest",
     "AuthorizationRule",
@@ -544,7 +515,6 @@ __all__ = [
     "_AuthorizationResult",
     "_RequestIdentity",
     "_authorize_request",
-    "_authorize_request_context",
     "_canonicalize_path",
     "_enforce_gateway_dependency_permissions",
     "_extract_workspace_scope_from_request",
