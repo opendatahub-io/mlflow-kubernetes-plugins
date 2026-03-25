@@ -30,6 +30,9 @@ type MLflowConfigSpec struct {
 	//   resolved artifact root: s3://ds-team-bucket/experiments
 	//
 	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:XValidation:rule="self == '' || !self.startsWith('/')",message="artifactRootPath must be relative"
+	// +kubebuilder:validation:XValidation:rule="self == '' || !self.matches('(^|.*/)\\.\\.(|/.*)$')",message="artifactRootPath must not contain '..' path segments"
 	ArtifactRootPath *string `json:"artifactRootPath,omitempty"`
 
 	// ArtifactRootSecret is the name of a Secret in this namespace that contains

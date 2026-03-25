@@ -210,6 +210,15 @@ def _gateway_model_definitions_rule(verb: str | None, **kwargs) -> Authorization
 
 
 def _workspaces_rule(verb: str | None, **kwargs) -> AuthorizationRule:
+    if verb is not None and not (
+        kwargs.get("deny", False)
+        or kwargs.get("apply_workspace_filter", False)
+        or kwargs.get("workspace_access_check", False)
+    ):
+        raise ValueError(
+            "_workspaces_rule requires deny=True, apply_workspace_filter=True, or "
+            "workspace_access_check=True when verb is set."
+        )
     return AuthorizationRule(verb, resource=None, **kwargs)
 
 

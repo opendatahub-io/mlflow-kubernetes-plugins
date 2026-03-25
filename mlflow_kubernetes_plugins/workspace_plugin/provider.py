@@ -192,12 +192,17 @@ class KubernetesWorkspaceProvider(AbstractStore):
             bucket_uri = self._get_bucket_uri_from_secret(
                 workspace_name, mlflow_config.artifact_root_secret
             )
-        except Exception as exc:
+        except (ApiException, KeyError, TypeError, ValueError):
+            _logger.exception(
+                "Failed to read Secret '%s' in namespace '%s'",
+                mlflow_config.artifact_root_secret,
+                workspace_name,
+            )
             raise MlflowException(
                 f"Failed to read Secret '{mlflow_config.artifact_root_secret}' "
-                f"in namespace '{workspace_name}': {exc}",
+                f"in namespace '{workspace_name}'",
                 INTERNAL_ERROR,
-            ) from exc
+            ) from None
 
         if not bucket_uri:
             raise MlflowException(

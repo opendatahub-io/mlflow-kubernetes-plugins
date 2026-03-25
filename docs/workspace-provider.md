@@ -77,7 +77,13 @@ If `MLFLOW_K8S_DEFAULT_WORKSPACE` is unset and the client does not specify a wor
 
 ## Artifact Root Overrides
 
-If the optional `MLflowConfig` CRD is installed, a namespace can override the server's default artifact root for the MLflow workspace. The plugin reads:
+If the optional `MLflowConfig` CRD is installed, a namespace can override the server's default artifact root for the MLflow workspace. The CRD uses fixed identifiers:
+
+- `metadata.name` must be `mlflow`
+- `spec.artifactRootSecret` must be `mlflow-artifact-connection`
+- `spec.artifactRootPath` is the user-configurable path suffix under that secret's bucket
+
+The plugin reads:
 
 - `spec.artifactRootSecret` for the secret containing `AWS_S3_BUCKET`
 - `spec.artifactRootPath` for an optional path suffix under that bucket
