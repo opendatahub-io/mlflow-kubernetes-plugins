@@ -5,6 +5,14 @@ CONTROLLER_TOOLS_VERSION ?= v0.19.0
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 GENERATED_FILES = api/mlflowconfig/v1/zz_generated.deepcopy.go config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml
 
+.PHONY: python-lint
+python-lint: ## Run Python lint checks.
+	ruff check .
+
+.PHONY: python-test
+python-test: ## Run Python test suite.
+	pytest -v
+
 .PHONY: generate-deepcopy
 generate-deepcopy: ## Generate deepcopy implementations for Go API types.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
