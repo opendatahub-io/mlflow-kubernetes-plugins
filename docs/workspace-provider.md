@@ -82,4 +82,6 @@ If the optional `MLflowConfig` CRD is installed, a namespace can override the se
 - `spec.artifactRootSecret` for the secret containing `AWS_S3_BUCKET`
 - `spec.artifactRootPath` for an optional path suffix under that bucket
 
+Install the generated CRD from `config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml` before creating namespace-specific overrides.
+
 This lets each namespace point to a different object store location without changing MLflow server startup flags.

@@ -54,6 +54,7 @@ Use `--app-name kubernetes-auth` only when you want request authorization enforc
 - [`docs/workspace-provider.md`](docs/workspace-provider.md): workspace provider behavior, configuration, and startup
 - [`docs/authorization-plugin.md`](docs/authorization-plugin.md): auth modes, headers, and request handling
 - [`docs/kubernetes-rbac.md`](docs/kubernetes-rbac.md): RBAC requirements and example manifests
+- `config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml`: generated `MLflowConfig` CRD manifest
 
 ## Development
 
@@ -61,6 +62,7 @@ Run the main local checks from the repository root:
 
 ```bash
 pip install -e ".[dev]"
+make generate-k8s
 ruff check .
 pytest
 python -m build
