@@ -7,7 +7,11 @@ from unittest.mock import MagicMock
 import pytest
 from kubernetes.client.exceptions import ApiException
 from mlflow.exceptions import MlflowException
-from mlflow_kubernetes_plugins.workspace_plugin.caches import MlflowConfigCache
+from mlflow_kubernetes_plugins.workspace_plugin.caches import (
+    ARTIFACT_CONNECTION_SECRET_NAME,
+    MlflowConfigCache,
+    SecretCache,
+)
 from mlflow_kubernetes_plugins.workspace_plugin.provider import (
     KubernetesWorkspaceProvider,
     create_kubernetes_workspace_store,
@@ -62,6 +66,12 @@ def mock_apis(monkeypatch):
         "metadata": {"resourceVersion": "1"},
     }
 
+    # Default: No artifact connection secrets
+    mock_core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+
     return SimpleNamespace(core=mock_core, custom=mock_custom)
 
 
@@ -75,6 +85,18 @@ def _namespace(name: str, description: str | None = None):
     annotations = {"mlflow.kubeflow.org/workspace-description": description} if description else {}
     metadata = SimpleNamespace(name=name, annotations=annotations, resource_version="1")
     return SimpleNamespace(metadata=metadata)
+
+
+def _secret(namespace: str, bucket: str | None = None):
+    data = {}
+    if bucket is not None:
+        data["AWS_S3_BUCKET"] = base64.b64encode(bucket.encode()).decode()
+    metadata = SimpleNamespace(
+        name=ARTIFACT_CONNECTION_SECRET_NAME,
+        namespace=namespace,
+        resource_version="1",
+    )
+    return SimpleNamespace(metadata=metadata, data=data)
 
 
 def test_list_workspaces_uses_cache(core_api):
@@ -92,6 +114,7 @@ def test_list_workspaces_uses_cache(core_api):
     assert core_api.list_namespace.call_args_list[0][1]["label_selector"] is None
     assert [ws.name for ws in first] == ["team-a", "team-b"]
     assert [ws.description for ws in first] == ["Team A", None]
+    assert [ws.default_artifact_root for ws in first] == [None, None]
     assert [ws.name for ws in second] == ["team-a", "team-b"]
 
 
@@ -140,6 +163,7 @@ def test_get_workspace_reads_namespace(core_api):
     assert not core_api.read_namespace.called
     assert workspace.name == "analytics"
     assert workspace.description == "Analytics Workspace"
+    assert workspace.default_artifact_root is None
 
 
 def test_get_default_workspace_env(core_api, monkeypatch):
@@ -310,6 +334,48 @@ def test_mlflow_config_cache_reloads_immediately_when_crd_installed(monkeypatch)
     assert cache._crd_available is True
 
 
+def test_mlflow_config_cache_ensures_secret_cache_for_supported_secret(monkeypatch):
+    mock_api = MagicMock()
+    mock_api.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME, "data")],
+        "metadata": {"resourceVersion": "5"},
+    }
+    ensure_secret_cache = MagicMock()
+
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
+        lambda: _FakeWatch(),
+    )
+
+    MlflowConfigCache(
+        mock_api,
+        ensure_artifact_connection_secret_cache=ensure_secret_cache,
+    )
+
+    ensure_secret_cache.assert_called_once_with()
+
+
+def test_mlflow_config_cache_does_not_ensure_secret_cache_for_other_secret(monkeypatch):
+    mock_api = MagicMock()
+    mock_api.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", "other-secret", "data")],
+        "metadata": {"resourceVersion": "5"},
+    }
+    ensure_secret_cache = MagicMock()
+
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
+        lambda: _FakeWatch(),
+    )
+
+    MlflowConfigCache(
+        mock_api,
+        ensure_artifact_connection_secret_cache=ensure_secret_cache,
+    )
+
+    ensure_secret_cache.assert_not_called()
+
+
 def test_resolve_artifact_root_returns_default_when_no_workspace(mock_apis):
     mock_apis.core.list_namespace.return_value = SimpleNamespace(
         items=[_namespace("team-a")],
@@ -337,6 +403,7 @@ def test_resolve_artifact_root_returns_default_when_no_config(mock_apis):
 
     assert root == "s3://default-bucket"
     assert should_append is True
+    mock_apis.core.list_secret_for_all_namespaces.assert_not_called()
 
 
 def test_resolve_artifact_root_uses_secret_bucket(mock_apis):
@@ -345,15 +412,12 @@ def test_resolve_artifact_root_uses_secret_bucket(mock_apis):
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "team-a-secret")],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.return_value = SimpleNamespace(
-        data={
-            "AWS_S3_BUCKET": base64.b64encode(b"team-a-bucket").decode(),
-            "AWS_ACCESS_KEY_ID": base64.b64encode(b"key").decode(),
-            "AWS_SECRET_ACCESS_KEY": base64.b64encode(b"secret").decode(),
-        }
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
     )
 
     provider = KubernetesWorkspaceProvider()
@@ -370,11 +434,12 @@ def test_resolve_artifact_root_appends_path(mock_apis):
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "team-a-secret", "experiments/data")],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME, "experiments/data")],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.return_value = SimpleNamespace(
-        data={"AWS_S3_BUCKET": base64.b64encode(b"team-a-bucket").decode()}
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
     )
 
     provider = KubernetesWorkspaceProvider()
@@ -391,11 +456,12 @@ def test_resolve_artifact_root_handles_empty_path(mock_apis):
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "team-a-secret", "")],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME, "")],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.return_value = SimpleNamespace(
-        data={"AWS_S3_BUCKET": base64.b64encode(b"team-a-bucket").decode()}
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
     )
 
     provider = KubernetesWorkspaceProvider()
@@ -412,10 +478,9 @@ def test_resolve_artifact_root_raises_on_secret_not_found(mock_apis):
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "nonexistent-secret")],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.side_effect = ApiException(status=404)
 
     provider = KubernetesWorkspaceProvider()
 
@@ -431,11 +496,12 @@ def test_resolve_artifact_root_raises_on_missing_bucket_key(mock_apis):
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "team-a-secret")],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.return_value = SimpleNamespace(
-        data={"AWS_ACCESS_KEY_ID": base64.b64encode(b"key").decode()}
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
     )
 
     provider = KubernetesWorkspaceProvider()
@@ -446,21 +512,51 @@ def test_resolve_artifact_root_raises_on_missing_bucket_key(mock_apis):
         provider.resolve_artifact_root("s3://default", "team-a")
 
 
-def test_resolve_artifact_root_raises_on_transient_error(mock_apis):
+def test_secret_cache_starts_lazily(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+
+    provider = KubernetesWorkspaceProvider()
+
+    assert provider._secret_cache is None
+    mock_apis.core.list_secret_for_all_namespaces.assert_not_called()
+
+
+def test_secret_cache_starts_when_mlflow_config_seen(mock_apis):
     mock_apis.core.list_namespace.return_value = SimpleNamespace(
         items=[_namespace("team-a")],
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "team-a-secret")],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.side_effect = ApiException(status=500)
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
 
     provider = KubernetesWorkspaceProvider()
 
-    with pytest.raises(MlflowException, match="Failed to read Secret"):
-        provider.resolve_artifact_root("s3://default", "team-a")
+    assert provider._secret_cache is not None
+    mock_apis.core.list_secret_for_all_namespaces.assert_called_once()
+
+
+def test_secret_cache_raises_on_transient_error(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+    mock_apis.custom.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
+        "metadata": {"resourceVersion": "1"},
+    }
+    mock_apis.core.list_secret_for_all_namespaces.side_effect = ApiException(status=500)
+
+    with pytest.raises(MlflowException, match="Failed to list Kubernetes secrets"):
+        KubernetesWorkspaceProvider()
 
 
 def _make_provider_with_path(mock_apis, path):
@@ -470,11 +566,12 @@ def _make_provider_with_path(mock_apis, path):
         metadata=SimpleNamespace(resource_version="1"),
     )
     mock_apis.custom.list_cluster_custom_object.return_value = {
-        "items": [_mlflow_config("team-a", "team-a-secret", path)],
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME, path)],
         "metadata": {"resourceVersion": "1"},
     }
-    mock_apis.core.read_namespaced_secret.return_value = SimpleNamespace(
-        data={"AWS_S3_BUCKET": base64.b64encode(b"team-a-bucket").decode()}
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
     )
     return KubernetesWorkspaceProvider()
 
@@ -551,3 +648,164 @@ def test_validate_artifact_path_normalizes_redundant_slashes(mock_apis):
 
     assert root == "s3://team-a-bucket/a/b/c"
     assert should_append is False
+
+
+def test_get_workspace_includes_artifact_root(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a", "Team A")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+    mock_apis.custom.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME, "experiments")],
+        "metadata": {"resourceVersion": "1"},
+    }
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+
+    provider = KubernetesWorkspaceProvider()
+    workspace = provider.get_workspace("team-a")
+
+    assert workspace.name == "team-a"
+    assert workspace.description == "Team A"
+    assert workspace.default_artifact_root == "s3://team-a-bucket/experiments"
+
+
+def test_list_workspaces_includes_artifact_root(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a"), _namespace("team-b")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+    mock_apis.custom.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
+        "metadata": {"resourceVersion": "1"},
+    }
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+
+    provider = KubernetesWorkspaceProvider()
+    workspaces = provider.list_workspaces()
+
+    by_name = {ws.name: ws for ws in workspaces}
+    assert by_name["team-a"].default_artifact_root == "s3://team-a-bucket"
+    assert by_name["team-b"].default_artifact_root is None
+
+
+def test_get_workspace_ignores_config_error(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+    mock_apis.custom.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
+        "metadata": {"resourceVersion": "1"},
+    }
+    mock_apis.core.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+
+    provider = KubernetesWorkspaceProvider()
+    workspace = provider.get_workspace("team-a")
+
+    assert workspace.name == "team-a"
+    assert workspace.default_artifact_root is None
+
+
+def test_resolve_artifact_root_rejects_wrong_secret_name(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+    mock_apis.custom.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", "some-other-secret")],
+        "metadata": {"resourceVersion": "1"},
+    }
+
+    provider = KubernetesWorkspaceProvider()
+
+    with pytest.raises(MlflowException, match="only 'mlflow-artifact-connection' is supported"):
+        provider.resolve_artifact_root("s3://default", "team-a")
+    mock_apis.core.list_secret_for_all_namespaces.assert_not_called()
+
+
+def test_secret_cache_handles_permission_denied(mock_apis):
+    mock_apis.core.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+    mock_apis.custom.list_cluster_custom_object.return_value = {
+        "items": [_mlflow_config("team-a", ARTIFACT_CONNECTION_SECRET_NAME)],
+        "metadata": {"resourceVersion": "1"},
+    }
+    mock_apis.core.list_secret_for_all_namespaces.side_effect = ApiException(status=403)
+
+    provider = KubernetesWorkspaceProvider()
+    secret_info = provider._ensure_secret_cache().get_secret("any-namespace")
+
+    assert secret_info is None
+    assert provider._secret_cache is not None
+    assert provider._secret_cache._available is False
+
+
+def test_secret_cache_does_not_reload_from_request_path(monkeypatch):
+    mock_api = MagicMock()
+    mock_api.list_secret_for_all_namespaces.side_effect = ApiException(status=403)
+
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
+        lambda: _FakeWatch(),
+    )
+
+    cache = SecretCache(mock_api)
+
+    assert cache.get_secret("team-a") is None
+    assert cache.get_secret("team-a") is None
+    assert mock_api.list_secret_for_all_namespaces.call_count == 1
+
+
+def test_secret_cache_loads_secrets(monkeypatch):
+    mock_api = MagicMock()
+    mock_api.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a", "team-a-bucket"), _secret("team-b", "team-b-bucket")],
+        metadata=SimpleNamespace(resource_version="10"),
+    )
+
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
+        lambda: _FakeWatch(),
+    )
+
+    cache = SecretCache(mock_api)
+
+    info_a = cache.get_secret("team-a")
+    assert info_a is not None
+    assert info_a.bucket_uri == "s3://team-a-bucket"
+
+    info_b = cache.get_secret("team-b")
+    assert info_b is not None
+    assert info_b.bucket_uri == "s3://team-b-bucket"
+
+    assert cache.get_secret("unknown") is None
+
+
+def test_secret_cache_handles_missing_bucket_key(monkeypatch):
+    mock_api = MagicMock()
+    mock_api.list_secret_for_all_namespaces.return_value = SimpleNamespace(
+        items=[_secret("team-a")],
+        metadata=SimpleNamespace(resource_version="1"),
+    )
+
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.workspace_plugin.caches.watch.Watch",
+        lambda: _FakeWatch(),
+    )
+
+    cache = SecretCache(mock_api)
+
+    info = cache.get_secret("team-a")
+    assert info is not None
+    assert info.bucket_uri is None
