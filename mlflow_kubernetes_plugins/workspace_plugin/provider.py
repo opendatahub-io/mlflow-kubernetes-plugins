@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import logging
 import os
 import posixpath
+import threading
 from dataclasses import dataclass
 from typing import Iterable
 from urllib.parse import parse_qs, urlparse
 
 from kubernetes import client, config
 from kubernetes.client import CoreV1Api, CustomObjectsApi
-from kubernetes.client.exceptions import ApiException
 from kubernetes.config.config_exception import ConfigException
 from mlflow.entities.workspace import Workspace
 from mlflow.exceptions import MlflowException
+from mlflow.protos import databricks_pb2
 from mlflow.protos.databricks_pb2 import (
-    INTERNAL_ERROR,
     INVALID_PARAMETER_VALUE,
     INVALID_STATE,
     RESOURCE_DOES_NOT_EXIST,
@@ -25,8 +23,10 @@ from mlflow.store.workspace.abstract_store import AbstractStore
 from mlflow.utils.uri import append_to_uri_path
 
 from mlflow_kubernetes_plugins.workspace_plugin.caches import (
+    ARTIFACT_CONNECTION_SECRET_NAME,
     MlflowConfigCache,
     NamespaceCache,
+    SecretCache,
 )
 
 _logger = logging.getLogger(__name__)
@@ -122,16 +122,28 @@ class KubernetesWorkspaceProvider(AbstractStore):
         )
 
         self._core_api, self._custom_api = self._create_api_clients()
+        self._secret_cache: SecretCache | None = None
+        self._secret_cache_lock = threading.Lock()
         self._namespace_cache = NamespaceCache(
             self._core_api,
             self._config.label_selector,
             self._config.namespace_exclude_globs,
         )
-        self._mlflow_config_cache = MlflowConfigCache(self._custom_api)
+        self._mlflow_config_cache = MlflowConfigCache(
+            self._custom_api,
+            ensure_artifact_connection_secret_cache=self._ensure_secret_cache,
+        )
 
     def list_workspaces(self) -> Iterable[Workspace]:  # type: ignore[override]
         infos = self._namespace_cache.list_namespaces()
-        return [Workspace(name=info.name, description=info.description) for info in infos]
+        return [
+            Workspace(
+                name=info.name,
+                description=info.description,
+                default_artifact_root=self._resolve_workspace_artifact_root(info.name),
+            )
+            for info in infos
+        ]
 
     def get_workspace(self, workspace_name: str) -> Workspace:  # type: ignore[override]
         info = self._namespace_cache.get_namespace(workspace_name)
@@ -147,7 +159,11 @@ class KubernetesWorkspaceProvider(AbstractStore):
                 )
             raise MlflowException(" ".join(parts), RESOURCE_DOES_NOT_EXIST)
 
-        return Workspace(name=info.name, description=info.description)
+        return Workspace(
+            name=info.name,
+            description=info.description,
+            default_artifact_root=self._resolve_workspace_artifact_root(info.name),
+        )
 
     def create_workspace(self, workspace: Workspace) -> Workspace:  # type: ignore[override]
         raise NotImplementedError("Namespace creation is not supported by this provider")
@@ -166,6 +182,23 @@ class KubernetesWorkspaceProvider(AbstractStore):
             )
         return self.get_workspace(self._config.default_workspace)
 
+    def _resolve_workspace_artifact_root(self, workspace_name: str) -> str | None:
+        """Best-effort resolution of the per-workspace artifact root."""
+        try:
+            root, should_append = self.resolve_artifact_root(None, workspace_name)
+        except MlflowException as exc:
+            if exc.error_code == databricks_pb2.ErrorCode.Name(INVALID_PARAMETER_VALUE):
+                _logger.warning(
+                    "Artifact root configuration error for workspace '%s': %s",
+                    workspace_name,
+                    exc,
+                )
+                return None
+            raise
+        if should_append:
+            return None
+        return root
+
     def resolve_artifact_root(
         self, default_artifact_root: str | None, workspace_name: str
     ) -> tuple[str | None, bool]:
@@ -173,8 +206,8 @@ class KubernetesWorkspaceProvider(AbstractStore):
         Resolve the artifact root for a workspace.
 
         If an MLflowConfig CRD exists for the namespace with artifactRootSecret set,
-        read the bucket information from the Secret and construct the artifact root.
-        If artifactRootPath is also set, append it to the bucket URI.
+        resolve the bucket information from the shared Secret cache and construct the
+        artifact root. If artifactRootPath is also set, append it to the bucket URI.
 
         Returns:
             A tuple (artifact_root, should_append_workspace_prefix).
@@ -187,27 +220,21 @@ class KubernetesWorkspaceProvider(AbstractStore):
             # No override configured - use default behavior
             return default_artifact_root, True
 
-        # Read the Secret to get bucket information
-        try:
-            bucket_uri = self._get_bucket_uri_from_secret(
-                workspace_name, mlflow_config.artifact_root_secret
-            )
-        except (ApiException, KeyError, TypeError, ValueError):
-            _logger.exception(
-                "Failed to read Secret '%s' in namespace '%s'",
-                mlflow_config.artifact_root_secret,
-                workspace_name,
-            )
+        if mlflow_config.artifact_root_secret != ARTIFACT_CONNECTION_SECRET_NAME:
             raise MlflowException(
-                f"Failed to read Secret '{mlflow_config.artifact_root_secret}' "
-                f"in namespace '{workspace_name}'",
-                INTERNAL_ERROR,
-            ) from None
+                f"MLflowConfig in namespace '{workspace_name}' sets artifactRootSecret to "
+                f"'{mlflow_config.artifact_root_secret}', but only "
+                f"'{ARTIFACT_CONNECTION_SECRET_NAME}' is supported.",
+                INVALID_PARAMETER_VALUE,
+            )
+
+        secret_info = self._ensure_secret_cache().get_secret(workspace_name)
+        bucket_uri = secret_info.bucket_uri if secret_info else None
 
         if not bucket_uri:
             raise MlflowException(
                 f"Invalid artifact storage configuration in namespace '{workspace_name}'. "
-                f"Secret '{mlflow_config.artifact_root_secret}' does not exist or is missing "
+                f"Secret '{ARTIFACT_CONNECTION_SECRET_NAME}' does not exist or is missing "
                 "the 'AWS_S3_BUCKET' key.",
                 INVALID_PARAMETER_VALUE,
             )
@@ -219,8 +246,8 @@ class KubernetesWorkspaceProvider(AbstractStore):
             # Validate the path
             if not path:
                 _logger.debug(
-                    f"MLflowConfig in namespace '{workspace_name}' has empty artifactRootPath. "
-                    "Using bucket root."
+                    "MLflowConfig in namespace '%s' has empty artifactRootPath. Using bucket root.",
+                    workspace_name,
                 )
             elif validated_path := self._validate_artifact_path(path, workspace_name):
                 bucket_uri = append_to_uri_path(bucket_uri, validated_path)
@@ -273,45 +300,19 @@ class KubernetesWorkspaceProvider(AbstractStore):
 
         return normalized
 
-    def _get_bucket_uri_from_secret(self, namespace: str, secret_name: str) -> str | None:
-        """
-        Read bucket information from a Secret and construct the bucket URI.
+    def _ensure_secret_cache(self) -> SecretCache:
+        """Create the shared SecretCache once, then reuse it."""
+        cache = self._secret_cache
+        if cache is not None:
+            return cache
 
-        Returns:
-            The bucket URI in s3:// format (e.g., 's3://bucket-name'),
-            or None if the Secret doesn't contain valid bucket information.
-        """
-        try:
-            secret = self._core_api.read_namespaced_secret(
-                name=secret_name,
-                namespace=namespace,
-            )
-        except ApiException as exc:
-            if exc.status == 404:
-                _logger.warning(f"Secret '{secret_name}' not found in namespace '{namespace}'")
-                return None
-            raise
+        with self._secret_cache_lock:
+            cache = self._secret_cache
+            if cache is None:
+                cache = SecretCache(self._core_api)
+                self._secret_cache = cache
 
-        data = secret.data or {}
-
-        def decode(key: str) -> str | None:
-            if value := data.get(key):
-                try:
-                    return base64.b64decode(value).decode("utf-8")
-                except (binascii.Error, UnicodeDecodeError):
-                    _logger.warning(
-                        "Invalid base64 data for %s in Secret '%s' (namespace '%s')",
-                        key,
-                        secret_name,
-                        namespace,
-                    )
-                    return None
-            return None
-
-        if not (bucket := decode("AWS_S3_BUCKET")):
-            return None
-
-        return f"s3://{bucket}"
+        return cache
 
     @staticmethod
     def _create_api_clients() -> tuple[CoreV1Api, CustomObjectsApi]:

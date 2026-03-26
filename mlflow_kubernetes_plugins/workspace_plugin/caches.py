@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
@@ -20,6 +23,8 @@ DEFAULT_DESCRIPTION_ANNOTATION = "mlflow.kubeflow.org/workspace-description"
 MLFLOW_CONFIG_GROUP = "mlflow.kubeflow.org"
 MLFLOW_CONFIG_VERSION = "v1"
 MLFLOW_CONFIG_PLURAL = "mlflowconfigs"
+
+ARTIFACT_CONNECTION_SECRET_NAME = "mlflow-artifact-connection"
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,8 +211,13 @@ class NamespaceCache:
 class MlflowConfigCache:
     """Caches MLflowConfig objects using a watch loop."""
 
-    def __init__(self, api: CustomObjectsApi):
+    def __init__(
+        self,
+        api: CustomObjectsApi,
+        ensure_artifact_connection_secret_cache: Callable[[], "SecretCache"] | None = None,
+    ):
         self._api = api
+        self._ensure_artifact_connection_secret_cache = ensure_artifact_connection_secret_cache
         self._lock = threading.RLock()
         self._configs: dict[str, MlflowConfigInfo] = {}
         self._resource_version: str | None = None
@@ -300,15 +310,22 @@ class MlflowConfigCache:
         items = response.get("items", [])
         metadata = response.get("metadata", {})
         resource_version = metadata.get("resourceVersion")
+        should_ensure_secret_cache = False
 
         with self._lock:
             self._configs = {}
             for item in items:
                 if info := self._extract_info(item):
                     self._configs[info.namespace] = info
+                    should_ensure_secret_cache = (
+                        should_ensure_secret_cache or self._uses_artifact_connection_secret(info)
+                    )
             self._resource_version = resource_version
             self._crd_available = True
             self._crd_missing_logged = False
+
+        if should_ensure_secret_cache:
+            self._ensure_secret_cache()
         self._ready_event.set()
 
     def _run(self) -> None:
@@ -377,6 +394,7 @@ class MlflowConfigCache:
         metadata = obj.get("metadata", {})
         namespace = metadata.get("namespace")
         resource_version = metadata.get("resourceVersion")
+        should_ensure_secret_cache = False
 
         if not namespace:
             return
@@ -385,6 +403,7 @@ class MlflowConfigCache:
             if event_type in {"ADDED", "MODIFIED"}:
                 if info := self._extract_info(obj):
                     self._configs[namespace] = info
+                    should_ensure_secret_cache = self._uses_artifact_connection_secret(info)
                 self._resource_version = resource_version
             elif event_type == "DELETED":
                 self._configs.pop(namespace, None)
@@ -396,6 +415,9 @@ class MlflowConfigCache:
             else:
                 # Unknown event type; trigger a resync.
                 self._resource_version = None
+
+        if should_ensure_secret_cache:
+            self._ensure_secret_cache()
 
     def _extract_info(self, obj: dict[str, object]) -> MlflowConfigInfo | None:
         metadata = obj.get("metadata", {})
@@ -410,8 +432,222 @@ class MlflowConfigCache:
             artifact_root_secret=spec.get("artifactRootSecret"),
         )
 
+    @staticmethod
+    def _uses_artifact_connection_secret(info: MlflowConfigInfo) -> bool:
+        return info.artifact_root_secret == ARTIFACT_CONNECTION_SECRET_NAME
+
+    def _ensure_secret_cache(self) -> None:
+        """Ask the owner to ensure the shared SecretCache is running."""
+        if self._ensure_artifact_connection_secret_cache is not None:
+            self._ensure_artifact_connection_secret_cache()
+
+
+@dataclass(frozen=True, slots=True)
+class SecretInfo:
+    namespace: str
+    bucket_uri: str | None
+
+
+class SecretCache:
+    """Caches the shared artifact-connection Secret across namespaces."""
+
+    def __init__(self, api: CoreV1Api):
+        self._api = api
+        self._lock = threading.RLock()
+        self._secrets: dict[str, SecretInfo] = {}
+        self._resource_version: str | None = None
+        self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
+        self._retry_event = threading.Event()
+        self._available = True
+
+        self._refresh_full()
+
+        self._thread = threading.Thread(
+            target=self._run,
+            name="mlflow-k8s-secret-watch",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._retry_event.set()
+
+    def get_secret(self, namespace: str) -> SecretInfo | None:
+        self._wait_until_ready()
+        with self._lock:
+            if not self._available:
+                return None
+            return self._secrets.get(namespace)
+
+    def _wait_until_ready(self) -> None:
+        if self._ready_event.wait(timeout=30):
+            return
+        raise MlflowException(
+            "Timed out waiting for the Kubernetes secret cache to initialize. "
+            "Double-check the MLflow server can reach the Kubernetes API.",
+            INTERNAL_ERROR,
+        )
+
+    def _refresh_full(self) -> None:
+        try:
+            response = self._api.list_secret_for_all_namespaces(
+                field_selector=f"metadata.name={ARTIFACT_CONNECTION_SECRET_NAME}",
+                watch=False,
+            )
+        except ApiException as exc:
+            if exc.status == 403:
+                _logger.warning(
+                    "Permission denied listing secrets. Ensure RBAC allows 'list' and 'watch' "
+                    "on secrets with resourceNames ['%s']. Per-namespace artifact root "
+                    "overrides will be unavailable until this is resolved.",
+                    ARTIFACT_CONNECTION_SECRET_NAME,
+                )
+                with self._lock:
+                    self._available = False
+                    self._secrets.clear()
+                    self._resource_version = None
+                self._ready_event.set()
+                return
+            raise MlflowException(
+                f"Failed to list Kubernetes secrets: {exc}",
+                INTERNAL_ERROR,
+            ) from exc
+
+        items = getattr(response, "items", []) or []
+        metadata = getattr(response, "metadata", None)
+        resource_version = getattr(metadata, "resource_version", None)
+
+        with self._lock:
+            self._secrets = {}
+            for secret in items:
+                info = self._extract_info(secret)
+                if info is not None:
+                    self._secrets[info.namespace] = info
+            self._resource_version = resource_version
+            self._available = True
+
+        self._ready_event.set()
+
+    def _run(self) -> None:  # pragma: no cover - background thread
+        while not self._stop_event.is_set():
+            if not self._available:
+                self._retry_event.wait(timeout=300)
+                self._retry_event.clear()
+                if self._stop_event.is_set():
+                    break
+                with self._lock:
+                    if not self._available:
+                        self._available = True
+                        self._resource_version = None
+                continue
+
+            if self._resource_version is None:
+                try:
+                    self._refresh_full()
+                except Exception:
+                    _logger.warning("Failed to refresh secrets; retrying shortly", exc_info=True)
+                    time.sleep(2)
+                    continue
+
+            if not self._available:
+                continue
+
+            watcher = watch.Watch()
+            try:
+                for event in watcher.stream(
+                    self._api.list_secret_for_all_namespaces,
+                    field_selector=f"metadata.name={ARTIFACT_CONNECTION_SECRET_NAME}",
+                    resource_version=self._resource_version,
+                    timeout_seconds=300,
+                ):
+                    if self._stop_event.is_set():
+                        watcher.stop()
+                        break
+                    self._handle_event(event)
+            except ApiException as exc:
+                if exc.status == 410:
+                    _logger.debug("Secret watch resource version expired; resyncing.")
+                    self._resource_version = None
+                elif exc.status == 403:
+                    with self._lock:
+                        self._available = False
+                        self._secrets.clear()
+                        self._resource_version = None
+                else:
+                    _logger.warning("Secret watch error: %s", exc)
+                    time.sleep(2)
+            except Exception:
+                _logger.exception("Unexpected error in secret watch loop")
+                time.sleep(2)
+            else:
+                time.sleep(1)
+
+    def _handle_event(self, event: dict[str, object]) -> None:
+        event_type = event.get("type")
+        obj = event.get("object")
+        if not obj:
+            return
+
+        metadata = getattr(obj, "metadata", None)
+        namespace = getattr(metadata, "namespace", None)
+        if not namespace:
+            return
+
+        resource_version = getattr(metadata, "resource_version", None)
+
+        with self._lock:
+            if event_type in {"ADDED", "MODIFIED"}:
+                info = self._extract_info(obj)
+                if info is None:
+                    self._secrets.pop(namespace, None)
+                else:
+                    self._secrets[namespace] = info
+                self._resource_version = resource_version
+            elif event_type == "DELETED":
+                self._secrets.pop(namespace, None)
+                self._resource_version = resource_version
+            elif event_type == "BOOKMARK":
+                self._resource_version = resource_version or self._resource_version
+            elif event_type == "ERROR":
+                self._resource_version = None
+                return
+            else:
+                self._resource_version = None
+                return
+
+        self._ready_event.set()
+
+    def _extract_info(self, secret: object) -> SecretInfo | None:
+        metadata = getattr(secret, "metadata", None)
+        namespace = getattr(metadata, "namespace", None)
+        if not namespace:
+            return None
+
+        data = getattr(secret, "data", None) or {}
+        bucket_uri = self._decode_bucket_uri(data, namespace)
+        return SecretInfo(namespace=namespace, bucket_uri=bucket_uri)
+
+    @staticmethod
+    def _decode_bucket_uri(data: dict[str, str], namespace: str) -> str | None:
+        raw = data.get("AWS_S3_BUCKET")
+        if not raw:
+            return None
+        try:
+            bucket = base64.b64decode(raw).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            _logger.warning(
+                "Invalid base64 data for AWS_S3_BUCKET in secret '%s' (namespace '%s')",
+                ARTIFACT_CONNECTION_SECRET_NAME,
+                namespace,
+            )
+            return None
+        return f"s3://{bucket}"
+
 
 __all__ = [
+    "ARTIFACT_CONNECTION_SECRET_NAME",
     "DEFAULT_DESCRIPTION_ANNOTATION",
     "MLFLOW_CONFIG_GROUP",
     "MLFLOW_CONFIG_PLURAL",
@@ -420,4 +656,6 @@ __all__ = [
     "MlflowConfigInfo",
     "NamespaceCache",
     "NamespaceInfo",
+    "SecretCache",
+    "SecretInfo",
 ]

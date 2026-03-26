@@ -12,8 +12,12 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     # MLflowConfig fixes spec.artifactRootSecret to "mlflow-artifact-connection".
+    # On Kubernetes 1.27+, field-selector authorization lets this stay scoped to
+    # metadata.name=mlflow-artifact-connection for list/watch requests too.
+    # On older clusters this rule will not authorize the secret watch, so use a
+    # broader secrets rule if you need per-namespace artifact root overrides there.
     resourceNames: ["mlflow-artifact-connection"]
-    verbs: ["get"]
+    verbs: ["list", "watch"]
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]

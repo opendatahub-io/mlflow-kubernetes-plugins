@@ -12,6 +12,7 @@ If you need the upstream MLflow workspace concepts first, read the official guid
 - optionally filters namespaces with a label selector
 - reads workspace descriptions from the `mlflow.kubeflow.org/workspace-description` annotation
 - supports per-namespace artifact root overrides through the optional `MLflowConfig` CRD
+- exposes resolved artifact root overrides through workspace metadata when available
 - keeps workspace CRUD read-only because namespace management belongs to Kubernetes
 
 ## Installation
@@ -91,3 +92,5 @@ The plugin reads:
 Install the generated CRD from `config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml` before creating namespace-specific overrides.
 
 This lets each namespace point to a different object store location without changing MLflow server startup flags.
+
+When the override resolves cleanly, `get_workspace` and `list_workspaces` expose it through the workspace `default_artifact_root` field.
