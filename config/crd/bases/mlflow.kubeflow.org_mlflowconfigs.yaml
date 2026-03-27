@@ -58,7 +58,7 @@ spec:
                 - message: artifactRootPath must be relative
                   rule: self == '' || !self.startsWith('/')
                 - message: artifactRootPath must not contain '..' path segments
-                  rule: self == '' || !self.matches('(^|.*/)\.\.(|/.*)$')
+                  rule: self == '' || !self.matches(r'(^|.*/)\.\.(|/.*)$')
               artifactRootSecret:
                 description: |-
                   ArtifactRootSecret is the name of a Secret in this namespace that contains
