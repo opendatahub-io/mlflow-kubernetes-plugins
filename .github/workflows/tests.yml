@@ -31,6 +31,39 @@ jobs:
       - name: Verify generated Kubernetes API artifacts
         run: make verify-generated
 
+  verify-crd-on-kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          wait: 2m
+
+      - name: Apply MLflowConfig CRD
+        run: kubectl apply -f config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml
+
+      - name: Verify CRD is established
+        run: |
+          kubectl wait --for=condition=Established --timeout=60s crd/mlflowconfigs.mlflow.kubeflow.org
+          kubectl get crd mlflowconfigs.mlflow.kubeflow.org -o yaml
+
+      - name: Verify valid MLflowConfig resource applies
+        run: |
+          kubectl create namespace test-mlflow
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: mlflow.kubeflow.org/v1
+          kind: MLflowConfig
+          metadata:
+            name: mlflow
+            namespace: test-mlflow
+          spec:
+            artifactRootSecret: mlflow-artifact-connection
+            artifactRootPath: experiments
+          EOF
+          kubectl get mlflowconfig -n test-mlflow mlflow -o yaml
+
   lint-and-test:
     runs-on: ubuntu-latest
     strategy:
