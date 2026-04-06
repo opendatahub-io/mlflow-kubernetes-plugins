@@ -216,3 +216,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 .venv/
+uv.lock
+mlflow.db
