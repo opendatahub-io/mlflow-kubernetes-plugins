@@ -61,7 +61,6 @@ from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_REGISTERED_MODELS,
 )
 from mlflow_kubernetes_plugins.auth.core import (
-    _authorize_request,
     _canonicalize_path,
     _is_unprotected_path,
     _parse_jwt_subject,
@@ -76,6 +75,8 @@ from mlflow_kubernetes_plugins.auth.rules import (
     AuthorizationRule,
     _normalize_rules,
 )
+
+from conftest import _authorize_request
 
 
 @pytest.fixture(autouse=True)
@@ -942,8 +943,7 @@ def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
     )
 
 
-def test_workspace_scope_falls_back_to_view_args(monkeypatch):
-    app = Flask(__name__)
+def test_workspace_scope_falls_back_to_path_params(monkeypatch):
     authorizer = Mock()
     authorizer.can_access_workspace.return_value = True
     rule = AuthorizationRule(None, requires_workspace=False, workspace_access_check=True)
@@ -956,21 +956,20 @@ def test_workspace_scope_falls_back_to_view_args(monkeypatch):
         lambda token, claim: "k8s-user",
     )
 
-    with app.test_request_context("/api/3.0/mlflow/workspaces/team-a", method="GET"):
-        request.view_args = {"workspace_name": "team-a"}
-        _authorize_request(
-            AuthorizationRequest(
-                authorization_header="Bearer scope-token",
-                forwarded_access_token=None,
-                remote_user_header_value=None,
-                remote_groups_header_value=None,
-                path="/api/3.0/mlflow/workspaces/team-a",
-                method="GET",
-                workspace=None,
-            ),
-            authorizer=authorizer,
-            config_values=KubernetesAuthConfig(),
-        )
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer scope-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/workspaces/team-a",
+            method="GET",
+            workspace=None,
+            path_params={"workspace_name": "team-a"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
 
     args = authorizer.can_access_workspace.call_args[0]
     assert args[0].token == "scope-token"

@@ -6,6 +6,7 @@ These tests ensure OTEL and job APIs enforce workspace-aware authentication.
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import mlflow_kubernetes_plugins.auth.middleware as middleware_mod
 import pytest
 from fastapi import FastAPI
 from fastapi.middleware.wsgi import WSGIMiddleware
@@ -27,9 +28,11 @@ from mlflow_kubernetes_plugins.auth.constants import (
     DEFAULT_REMOTE_GROUPS_SEPARATOR,
     DEFAULT_REMOTE_USER_HEADER,
 )
+from mlflow_kubernetes_plugins.auth.core import _AUTHORIZATION_HANDLED
 from mlflow_kubernetes_plugins.auth.middleware import KubernetesAuthMiddleware
 from mlflow_kubernetes_plugins.auth.rules import (
     PATH_AUTHORIZATION_RULES,
+    AuthorizationRule,
 )
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -73,6 +76,118 @@ def test_job_api_endpoints_in_auth_rules():
     for path, method, verb in cases:
         rule = PATH_AUTHORIZATION_RULES[(path, method)]
         assert (rule.verb, rule.resource) == (verb, "experiments")
+
+
+def test_fastapi_auth_leaves_non_json_bodies_unloaded(monkeypatch) -> None:
+    app = FastAPI()
+
+    class _WorkspaceContextMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            workspace_context.set_server_request_workspace("team-a")
+            try:
+                return await call_next(request)
+            finally:
+                workspace_context.clear_server_request_workspace()
+
+    @app.post("/upload")
+    async def upload(request: Request):
+        body = await request.body()
+        state = request.scope.get("state", {})
+        raw_body = state.get(middleware_mod._REQUEST_RAW_BODY_STATE_KEY, b"")
+        return {
+            "body_len": len(body),
+            "captured_len": len(raw_body) if isinstance(raw_body, (bytes, bytearray)) else -1,
+            "json_body": state.get(middleware_mod._REQUEST_JSON_BODY_STATE_KEY),
+        }
+
+    authorizer = Mock(spec=KubernetesAuthorizer)
+    authorizer.is_allowed.return_value = True
+    config = Mock(spec=KubernetesAuthConfig)
+    config.username_claim = "sub"
+    config.cache_ttl_seconds = 300.0
+    config.authorization_mode = AuthorizationMode.SELF_SUBJECT_ACCESS_REVIEW
+    config.user_header = DEFAULT_REMOTE_USER_HEADER
+    config.groups_header = DEFAULT_REMOTE_GROUPS_HEADER
+    config.groups_separator = DEFAULT_REMOTE_GROUPS_SEPARATOR
+    app.add_middleware(
+        KubernetesAuthMiddleware,
+        authorizer=authorizer,
+        config_values=config,
+    )
+    app.add_middleware(_WorkspaceContextMiddleware)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [
+            AuthorizationRule("update", resource="experiments")
+        ],
+    )
+    client = TestClient(app)
+
+    payload = b"x" * 4096
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="test-user"):
+        response = client.post(
+            "/upload",
+            content=payload,
+            headers={
+                "Authorization": "Bearer valid-token",
+                WORKSPACE_HEADER_NAME: "team-a",
+                "content-type": "application/octet-stream",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "body_len": len(payload),
+        "captured_len": 0,
+        "json_body": None,
+    }
+
+
+def test_fastapi_auth_skips_json_body_load_when_broad_auth_succeeds(
+    mock_authorizer, mock_config
+) -> None:
+    app = FastAPI()
+
+    class _WorkspaceContextMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            workspace_context.set_server_request_workspace("team-a")
+            try:
+                return await call_next(request)
+            finally:
+                workspace_context.clear_server_request_workspace()
+
+    @app.post("/ajax-api/3.0/jobs")
+    async def create_job(request: Request):
+        state = request.scope.get("state", {})
+        raw_body = state.get(middleware_mod._REQUEST_RAW_BODY_STATE_KEY, b"")
+        return {
+            "captured_len": len(raw_body) if isinstance(raw_body, (bytes, bytearray)) else -1,
+            "json_body": state.get(middleware_mod._REQUEST_JSON_BODY_STATE_KEY),
+        }
+
+    app.add_middleware(
+        KubernetesAuthMiddleware,
+        authorizer=mock_authorizer,
+        config_values=mock_config,
+    )
+    app.add_middleware(_WorkspaceContextMiddleware)
+
+    mock_authorizer.is_allowed.return_value = True
+
+    client = TestClient(app)
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="test-user"):
+        response = client.post(
+            "/ajax-api/3.0/jobs",
+            headers={
+                "Authorization": "Bearer valid-token",
+                WORKSPACE_HEADER_NAME: "team-a",
+            },
+            json={"job_name": "lazy-body-check"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"captured_len": 0, "json_body": None}
+    mock_authorizer.is_allowed.assert_called_once()
 
 
 @pytest.fixture
@@ -465,6 +580,55 @@ def test_job_api_endpoints_accept_forwarded_access_token(
     assert subresource is None
 
 
+def test_job_create_endpoint_uses_broad_experiment_permission(mock_authorizer, mock_config) -> None:
+    app = FastAPI()
+
+    class _WorkspaceContextMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            workspace_header = request.headers.get(WORKSPACE_HEADER_NAME)
+            if not workspace_header:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": {"message": f"Missing {WORKSPACE_HEADER_NAME} header"}},
+                )
+            workspace_context.set_server_request_workspace(workspace_header)
+            try:
+                return await call_next(request)
+            finally:
+                workspace_context.clear_server_request_workspace()
+
+    @app.post("/ajax-api/3.0/jobs")
+    async def create_job(_request: Request):
+        return {"status": "job_created"}
+
+    app.add_middleware(
+        KubernetesAuthMiddleware,
+        authorizer=mock_authorizer,
+        config_values=mock_config,
+    )
+    app.add_middleware(_WorkspaceContextMiddleware)
+
+    mock_authorizer.is_allowed.return_value = True
+
+    client = TestClient(app)
+    with patch("mlflow_kubernetes_plugins.auth.core._parse_jwt_subject", return_value="test-user"):
+        response = client.post(
+            "/ajax-api/3.0/jobs",
+            headers={
+                "Authorization": "Bearer valid-token",
+                WORKSPACE_HEADER_NAME: "team-a",
+            },
+            json={"job_name": "invoke_scorer", "params": {"experiment_id": "123"}},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "job_created"
+    mock_authorizer.is_allowed.assert_called_once()
+    first_call = mock_authorizer.is_allowed.call_args_list[0]
+    assert first_call.args[1:] == ("experiments", "update", "team-a", None)
+    assert first_call.kwargs == {}
+
+
 def test_job_api_endpoints_prefer_forwarded_token_on_invalid_authorization(
     fastapi_app_with_k8s_auth, mock_authorizer
 ) -> None:
@@ -487,9 +651,7 @@ def test_job_api_endpoints_prefer_forwarded_token_on_invalid_authorization(
     assert subresource is None
 
 
-def test_graphql_flask_authorizes_when_fastapi_defers(
-    mock_authorizer, mock_config, monkeypatch
-) -> None:
+def test_graphql_fastapi_authorizes_before_flask_graphql_execution(monkeypatch) -> None:
     from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     flask_app = Flask(__name__)
@@ -497,7 +659,10 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
     @flask_app.post("/graphql")
     def graphql_endpoint():
         payload = flask_request.get_json(silent=True) or {}
-        return {"query": payload.get("query")}
+        return {
+            "query": payload.get("query"),
+            "has_identity": _AUTHORIZATION_HANDLED.get() is not None,
+        }
 
     monkeypatch.setenv("MLFLOW_K8S_AUTH_CACHE_TTL_SECONDS", "300")
     fake_k8s_config = SimpleNamespace(
@@ -519,34 +684,12 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
             "mlflow_kubernetes_plugins.auth.authorizer._load_kubernetes_configuration",
             return_value=fake_k8s_config,
         ),
+        patch(
+            "mlflow_kubernetes_plugins.auth.middleware.resolve_workspace_from_header",
+            return_value=SimpleNamespace(name="team-a"),
+        ),
     ):
-        create_app(flask_app)
-
-        fastapi_app = FastAPI()
-        fastapi_app.mount("/", WSGIMiddleware(flask_app))
-
-        class _WorkspaceContextMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request: Request, call_next):
-                workspace_header = request.headers.get(WORKSPACE_HEADER_NAME)
-                if not workspace_header:
-                    return JSONResponse(
-                        status_code=400,
-                        content={"error": {"message": f"Missing {WORKSPACE_HEADER_NAME} header"}},
-                    )
-                workspace_context.set_server_request_workspace(workspace_header)
-                try:
-                    return await call_next(request)
-                finally:
-                    workspace_context.clear_server_request_workspace()
-
-        fastapi_app.add_middleware(
-            KubernetesAuthMiddleware,
-            authorizer=mock_authorizer,
-            config_values=mock_config,
-        )
-        fastapi_app.add_middleware(_WorkspaceContextMiddleware)
-
-        client = TestClient(fastapi_app)
+        client = TestClient(create_app(flask_app))
         query = '{ mlflowGetExperiment(input: { experimentId: "123" }) { experiment { name } } }'
         with patch(
             "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
@@ -556,17 +699,50 @@ def test_graphql_flask_authorizes_when_fastapi_defers(
                 "/graphql",
                 headers={
                     "Authorization": "Bearer valid-token",
-                    WORKSPACE_HEADER_NAME: "team-a",
+                    "Host": "localhost",
                 },
                 json={"query": query},
             )
 
     assert response.status_code == 200
     assert response.json()["query"] == query
-    # FastAPI middleware should NOT have called its authorizer
-    mock_authorizer.is_allowed.assert_not_called()
-    # Flask's before_request handler SHOULD have called the authorizer
+    assert response.json()["has_identity"] is True
     flask_is_allowed.assert_called_once()
+
+
+def test_graphql_get_uses_query_string_payload(mock_authorizer, mock_config) -> None:
+    app = FastAPI()
+
+    class _WorkspaceContextMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            workspace_context.set_server_request_workspace("team-a")
+            try:
+                return await call_next(request)
+            finally:
+                workspace_context.clear_server_request_workspace()
+
+    @app.get("/graphql")
+    async def graphql_endpoint():
+        return {"status": "ok"}
+
+    app.add_middleware(
+        KubernetesAuthMiddleware,
+        authorizer=mock_authorizer,
+        config_values=mock_config,
+    )
+    app.add_middleware(_WorkspaceContextMiddleware)
+
+    client = TestClient(app)
+    query = '{ mlflowGetExperiment(input: { experimentId: "123" }) { experiment { name } } }'
+    response = client.get(
+        "/graphql",
+        params={"query": query, "variables": '{"ignored": true}'},
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    mock_authorizer.is_allowed.assert_called_once()
 
 
 def test_job_api_missing_workspace_context_returns_error(
@@ -615,7 +791,7 @@ def test_fastapi_route_validation_fails_for_missing_rule():
         _validate_fastapi_route_authorization(app)
 
 
-def test_create_app_wraps_flask_with_fastapi_under_uvicorn(monkeypatch):
+def test_create_app_wraps_flask_with_fastapi(monkeypatch):
     from mlflow_kubernetes_plugins.auth.middleware import create_app
 
     flask_app = Flask(__name__)
@@ -638,17 +814,61 @@ def test_create_app_wraps_flask_with_fastapi_under_uvicorn(monkeypatch):
         lambda config_values: authorizer,
     )
 
-    with patch("mlflow_kubernetes_plugins.auth.middleware._MLFLOW_SGI_NAME.get", return_value="uvicorn"):
-        result = create_app(flask_app)
+    result = create_app(flask_app)
 
     assert result is fastapi_app
-    fastapi_app.add_middleware.assert_called_once()
-    middleware_args, middleware_kwargs = fastapi_app.add_middleware.call_args
-    assert middleware_args[0] is KubernetesAuthMiddleware
-    assert middleware_kwargs["authorizer"] is authorizer
-    assert middleware_kwargs["config_values"] is config_values
+    assert fastapi_app.add_middleware.call_count == 1
+    first_call = fastapi_app.add_middleware.call_args_list[0]
+    assert first_call.args[0] is KubernetesAuthMiddleware
+    assert first_call.kwargs["authorizer"] is authorizer
+    assert first_call.kwargs["config_values"] is config_values
     validate_fastapi_routes.assert_called_once_with(fastapi_app)
     validate_graphql.assert_called_once_with()
+
+
+def test_fastapi_filters_mounted_flask_workspace_lists(
+    mock_authorizer, mock_config, monkeypatch
+) -> None:
+    flask_app = Flask(__name__)
+
+    @flask_app.get("/api/3.0/mlflow/workspaces")
+    def list_workspaces():
+        return {"workspaces": [{"name": "team-a"}, {"name": "team-b"}]}
+
+    app = FastAPI()
+    app.mount("/", WSGIMiddleware(flask_app))
+
+    class _WorkspaceContextMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            workspace_context.set_server_request_workspace("team-a")
+            try:
+                return await call_next(request)
+            finally:
+                workspace_context.clear_server_request_workspace()
+
+    app.add_middleware(
+        KubernetesAuthMiddleware,
+        authorizer=mock_authorizer,
+        config_values=mock_config,
+    )
+    app.add_middleware(_WorkspaceContextMiddleware)
+
+    mock_authorizer.accessible_workspaces.return_value = {"team-a"}
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [
+            AuthorizationRule(None, apply_workspace_filter=True, requires_workspace=False)
+        ],
+    )
+
+    client = TestClient(app)
+    response = client.get(
+        "/api/3.0/mlflow/workspaces",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["workspaces"] == [{"name": "team-a"}]
 
 
 # Example usage documentation

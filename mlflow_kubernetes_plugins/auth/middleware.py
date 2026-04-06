@@ -1,23 +1,26 @@
-"""Flask and FastAPI middleware wiring for the Kubernetes auth plugin."""
+"""FastAPI middleware wiring for the Kubernetes auth plugin."""
 
 from __future__ import annotations
 
 import atexit
-import io
+import copy
 import json
 import logging
+from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 from fastapi import Request
-from flask import Flask, Response, g, request
-from mlflow.environment_variables import _MLFLOW_SGI_NAME
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
 from mlflow.server import app as mlflow_app
 from mlflow.server.fastapi_app import create_fastapi_app
 from mlflow.server.workspace_helpers import WORKSPACE_HEADER_NAME, resolve_workspace_from_header
 from mlflow.utils import workspace_context
+from starlette.concurrency import iterate_in_threadpool
+from starlette.datastructures import QueryParams
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from starlette.types import Scope
 
 import mlflow_kubernetes_plugins.auth.core as core_mod
 from mlflow_kubernetes_plugins.auth.authorizer import KubernetesAuthConfig, KubernetesAuthorizer
@@ -28,17 +31,33 @@ from mlflow_kubernetes_plugins.auth.compiler import (
 from mlflow_kubernetes_plugins.auth.constants import WORKSPACE_REQUIRED_ERROR_MESSAGE
 from mlflow_kubernetes_plugins.auth.core import (
     _AUTHORIZATION_HANDLED,
-    _authorize_request,
+    _authorize_request_async,
     _canonicalize_path,
     _is_unprotected_path,
 )
 from mlflow_kubernetes_plugins.auth.graphql import (
     validate_graphql_field_authorization as _validate_graphql_field_authorization,
 )
-from mlflow_kubernetes_plugins.auth.request_context import (
-    build_fastapi_authorization_request,
-    build_flask_authorization_request,
-)
+from mlflow_kubernetes_plugins.auth.request_context import build_fastapi_authorization_request
+
+if TYPE_CHECKING:
+    from flask import Flask
+
+_REQUEST_RAW_BODY_STATE_KEY = "mlflow_k8s_raw_body"
+_REQUEST_JSON_BODY_STATE_KEY = "mlflow_k8s_json_body"
+_REQUEST_BODY_LOADED_STATE_KEY = "mlflow_k8s_body_loaded"
+
+
+def _replace_scope_headers(scope: Scope, updates: dict[str, str]) -> None:
+    """Replace (or add) ASGI scope headers, matching case-insensitively."""
+    encoded = {k.lower().encode("latin-1"): v.encode("latin-1") for k, v in updates.items()}
+    headers = [
+        (header_name, header_value)
+        for header_name, header_value in scope.get("headers", [])
+        if header_name.lower() not in encoded
+    ]
+    headers.extend(encoded.items())
+    scope["headers"] = headers
 
 
 class KubernetesAuthMiddleware(BaseHTTPMiddleware):
@@ -49,10 +68,170 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
         self.authorizer = authorizer
         self.config_values = config_values
 
+    @staticmethod
+    def _set_request_json_body(request: Request, payload: dict[str, object]) -> None:
+        """Overwrite the ASGI request body with *payload* and update scope state/headers."""
+        raw_body = json.dumps(payload).encode("utf-8")
+        state = request.scope.setdefault("state", {})
+        state[_REQUEST_RAW_BODY_STATE_KEY] = raw_body
+        state[_REQUEST_JSON_BODY_STATE_KEY] = payload
+        state[_REQUEST_BODY_LOADED_STATE_KEY] = True
+        request._body = raw_body
+        _replace_scope_headers(request.scope, {
+            "content-length": str(len(raw_body)),
+            "content-type": "application/json",
+        })
+
+    @staticmethod
+    def _set_request_query_params(request: Request, query_params: dict[str, object]) -> None:
+        """Re-encode *query_params* into the ASGI scope and Starlette's cached QueryParams."""
+        items: list[tuple[str, str]] = []
+        for key, value in query_params.items():
+            if isinstance(value, list):
+                items.extend((key, str(item)) for item in value)
+            elif value is not None:
+                items.append((key, str(value)))
+        query_string = urlencode(items, doseq=True).encode("utf-8")
+        request.scope["query_string"] = query_string
+        request._query_params = QueryParams(query_string)
+
+    @staticmethod
+    def _request_can_have_json_body(request: Request) -> bool:
+        return request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and (
+            "json" in request.headers.get("content-type", "").lower()
+        )
+
+    @classmethod
+    async def _ensure_request_json_body(cls, request: Request) -> object | None:
+        """Lazily load and cache the JSON body from the ASGI request.
+
+        Returns the parsed payload (or ``None`` when the content-type is not JSON).
+        Subsequent calls return the cached value without re-reading the body stream.
+        """
+        if not cls._request_can_have_json_body(request):
+            return None
+        state = request.scope.setdefault("state", {})
+        if state.get(_REQUEST_BODY_LOADED_STATE_KEY):
+            return state.get(_REQUEST_JSON_BODY_STATE_KEY)
+
+        # BaseHTTPMiddleware caches request.body() on the outer Request and replays request._body
+        # to the downstream app, so this gives us lazy loading without a second ASGI middleware.
+        raw_body = bytes(await request.body())
+        state[_REQUEST_RAW_BODY_STATE_KEY] = raw_body
+        try:
+            payload = json.loads(raw_body) if raw_body else None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        state[_REQUEST_JSON_BODY_STATE_KEY] = payload
+        state[_REQUEST_BODY_LOADED_STATE_KEY] = True
+        return payload
+
+    @classmethod
+    def _apply_request_context_rewrites(
+        cls,
+        request: Request,
+        *,
+        original_request_context,
+        updated_request_context,
+        username: str | None,
+        override_run_user: bool,
+    ) -> None:
+        """Propagate authorization-side mutations back into the live ASGI request.
+
+        This covers two cases: rewriting the JSON body (e.g. injecting ``user_id``
+        for run-ownership override, or applying collection filter changes) and
+        updating query parameters that were narrowed during authorization.
+        The ASGI request is only mutated when a change is actually detected.
+        """
+        body_changed = (
+            updated_request_context.json_body is not original_request_context.json_body
+            and updated_request_context.json_body != original_request_context.json_body
+        )
+        needs_user_override = override_run_user and username
+        if isinstance(updated_request_context.json_body, dict) and (body_changed or needs_user_override):
+            payload = (
+                copy.deepcopy(updated_request_context.json_body)
+                if needs_user_override
+                else updated_request_context.json_body
+            )
+            if needs_user_override:
+                payload["user_id"] = username
+            cls._set_request_json_body(request, payload)
+
+        if updated_request_context.query_params != original_request_context.query_params:
+            cls._set_request_query_params(request, updated_request_context.query_params)
+
+    async def _filter_workspace_list_response(self, response, *, auth_result) -> None:
+        """Strip workspaces the caller cannot access from a ``{"workspaces": [...]}`` response."""
+        payload, _ = await self._read_json_response_payload(response)
+        if not isinstance(payload, dict):
+            return
+        workspaces = payload.get("workspaces")
+        if not isinstance(workspaces, list):
+            return
+        workspace_names = [ws.get("name") for ws in workspaces if isinstance(ws, dict)]
+        accessible = self.authorizer.accessible_workspaces(
+            auth_result.identity,
+            [name for name in workspace_names if isinstance(name, str)],
+        )
+        filtered_workspaces = [
+            ws for ws in workspaces if isinstance(ws, dict) and ws.get("name") in accessible
+        ]
+        if filtered_workspaces != workspaces:
+            updated_payload = dict(payload)
+            updated_payload["workspaces"] = filtered_workspaces
+            self._replace_json_response_payload(response, updated_payload)
+
+    async def _apply_response_authorization_filters(self, response, *, auth_result) -> None:
+        if auth_result.rules[0].apply_workspace_filter and response.status_code < 400:
+            await self._filter_workspace_list_response(response, auth_result=auth_result)
+
+    @staticmethod
+    async def _read_json_response_payload(response) -> tuple[dict[str, object] | None, bytes | None]:
+        """Consume a streaming Starlette response body and JSON-decode it.
+
+        The consumed bytes are re-attached to ``response.body_iterator`` so
+        downstream middleware can still read them.  Returns ``(None, None)`` when
+        the response is not JSON, or ``(None, raw_bytes)`` on decode failure.
+        """
+        content_type = response.headers.get("content-type", "")
+        if "application/json" not in content_type.lower():
+            return None, None
+
+        body = getattr(response, "body", None)
+        if not isinstance(body, (bytes, bytearray)):
+            collected = bytearray()
+            async for chunk in response.body_iterator:
+                collected.extend(chunk)
+            body = bytes(collected)
+            response.body_iterator = iterate_in_threadpool(iter([body]))
+        else:
+            body = bytes(body)
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None, body
+        if not isinstance(payload, dict):
+            return None, body
+        return payload, body
+
+    @staticmethod
+    def _replace_json_response_payload(response, payload: dict[str, object]) -> None:
+        """Overwrite the response body with the re-serialized *payload*."""
+        updated_body = json.dumps(payload).encode("utf-8")
+        response.body = updated_body
+        response.body_iterator = iterate_in_threadpool(iter([updated_body]))
+        response.headers["content-length"] = str(len(updated_body))
+
     async def dispatch(self, request: Request, call_next):
         """Process each request through the authorization pipeline."""
         authorization_token = _AUTHORIZATION_HANDLED.set(None)
         try:
+            state = request.scope.setdefault("state", {})
+            state.setdefault(_REQUEST_RAW_BODY_STATE_KEY, b"")
+            state.setdefault(_REQUEST_JSON_BODY_STATE_KEY, None)
+            state.setdefault(_REQUEST_BODY_LOADED_STATE_KEY, False)
             canonical_path = _canonicalize_path(
                 raw_path=str(request.url.path or ""),
                 scope_path=request.scope.get("path"),
@@ -94,22 +273,25 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                     workspace_context.set_server_request_workspace(workspace_name)
                     workspace_set = True
 
-            if canonical_path.endswith("/graphql"):
-                # Let Flask authorize GraphQL to avoid consuming/rebuffering the ASGI body.
-                try:
-                    return await call_next(request)
-                finally:
-                    if workspace_set:
-                        workspace_context.clear_server_request_workspace()
+            path_params = dict(request.path_params)
+
+            async def _ensure_auth_request_json_body():
+                await self._ensure_request_json_body(request)
+                return state.get(_REQUEST_JSON_BODY_STATE_KEY)
+
+            auth_request = build_fastapi_authorization_request(
+                request,
+                self.config_values,
+                path=canonical_path,
+                workspace=workspace_name,
+                json_body=state.get(_REQUEST_JSON_BODY_STATE_KEY),
+                path_params=path_params,
+                ensure_json_body=_ensure_auth_request_json_body,
+            )
 
             try:
-                auth_result = _authorize_request(
-                    build_fastapi_authorization_request(
-                        request,
-                        self.config_values,
-                        path=canonical_path,
-                        workspace=workspace_name,
-                    ),
+                auth_result = await _authorize_request_async(
+                    auth_request,
                     authorizer=self.authorizer,
                     config_values=self.config_values,
                 )
@@ -131,6 +313,13 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                     status_code=exc.get_http_status_code(),
                     content={"error": {"code": exc.error_code, "message": exc.message}},
                 )
+            self._apply_request_context_rewrites(
+                request,
+                original_request_context=auth_request,
+                updated_request_context=auth_result.request_context,
+                username=auth_result.username,
+                override_run_user=auth_result.rules[0].override_run_user,
+            )
 
             # Continue with the request, clearing any temporary workspace context.
             try:
@@ -138,40 +327,10 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
             finally:
                 if workspace_set:
                     workspace_context.clear_server_request_workspace()
+            await self._apply_response_authorization_filters(response, auth_result=auth_result)
             return response
         finally:
             _AUTHORIZATION_HANDLED.reset(authorization_token)
-
-
-def _override_run_user(username: str) -> None:
-    """Rewrite the request payload so MLflow sees the authenticated user as run owner."""
-    if not request.mimetype or "json" not in request.mimetype.lower():
-        return
-
-    payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        return
-
-    payload["user_id"] = username
-    data = json.dumps(payload).encode("utf-8")
-
-    # Reset cached JSON with proper structure expected by Werkzeug
-    # The keys are boolean values for the 'silent' parameter
-    request._cached_json = {True: payload, False: payload}  # type: ignore[attr-defined]
-    request._cached_data = data  # type: ignore[attr-defined]
-    request.environ["wsgi.input"] = io.BytesIO(data)
-    request.environ["CONTENT_LENGTH"] = str(len(data))
-    request.environ["CONTENT_TYPE"] = "application/json"
-
-
-def _record_authorization_metadata(auth_result) -> None:
-    """Record auth metadata on the Flask request context."""
-    primary_rule = auth_result.rules[0]
-    if auth_result.username and primary_rule.override_run_user:
-        _override_run_user(auth_result.username)
-
-    g.mlflow_k8s_identity = auth_result.identity
-    g.mlflow_k8s_apply_workspace_filter = primary_rule.apply_workspace_filter
 
 
 def create_app(app: Flask | None = None):
@@ -188,103 +347,15 @@ def create_app(app: Flask | None = None):
     atexit.register(authorizer.close)
 
     _compile_authorization_rules()
-
-    @app.before_request
-    def _k8s_auth_before_request():
-        auth_result = _AUTHORIZATION_HANDLED.get()
-        if auth_result is not None:
-            _record_authorization_metadata(auth_result)
-            return None
-
-        canonical_path = _canonicalize_path(
-            raw_path=request.path or "",
-            path_info=request.environ.get("PATH_INFO"),
-            script_name=request.environ.get("SCRIPT_NAME"),
-        )
-        if _is_unprotected_path(canonical_path):
-            return None
-
-        try:
-            auth_result = _authorize_request(
-                build_flask_authorization_request(
-                    config_values,
-                    path=canonical_path,
-                    workspace=workspace_context.get_request_workspace(),
-                ),
-                authorizer=authorizer,
-                config_values=config_values,
-            )
-        except MlflowException as exc:
-            response = Response(mimetype="application/json")
-            response.set_data(exc.serialize_as_json())
-            response.status_code = exc.get_http_status_code()
-            return response
-
-        # Use the first rule for metadata - these properties are consistent across all rules
-        _record_authorization_metadata(auth_result)
-
-        return None
-
-    @app.after_request
-    def _k8s_auth_after_request(response: Response):
-        try:
-            should_filter = getattr(g, "mlflow_k8s_apply_workspace_filter", False)
-            identity = getattr(g, "mlflow_k8s_identity", None)
-            can_filter_response = response.mimetype == "application/json" and response.status_code < 400
-            if not (should_filter and identity and can_filter_response):
-                return response
-
-            try:
-                payload = json.loads(response.get_data(as_text=True))
-            except Exception:
-                payload = None
-
-            if not isinstance(payload, dict):
-                return response
-
-            workspaces = payload.get("workspaces")
-            if not isinstance(workspaces, list):
-                return response
-
-            workspace_names = [ws.get("name") for ws in workspaces if isinstance(ws, dict)]
-            accessible = authorizer.accessible_workspaces(
-                identity, [name for name in workspace_names if isinstance(name, str)]
-            )
-            payload["workspaces"] = [
-                ws for ws in workspaces if isinstance(ws, dict) and ws.get("name") in accessible
-            ]
-            response.set_data(json.dumps(payload))
-            response.headers["Content-Length"] = str(len(response.get_data()))
-        finally:
-            for attr in (
-                "mlflow_k8s_identity",
-                "mlflow_k8s_apply_workspace_filter",
-            ):
-                if hasattr(g, attr):
-                    delattr(g, attr)
-            _AUTHORIZATION_HANDLED.set(None)
-
-        return response
-
-    if _MLFLOW_SGI_NAME.get() == "uvicorn":
-        fastapi_app = create_fastapi_app(app)
-
-        # Add Kubernetes auth middleware to FastAPI
-        # Important: This must be added AFTER security middleware but BEFORE routes
-        # to ensure proper middleware ordering
-        #
-        # Note: The KubernetesAuthMiddleware runs for all requests when the Flask app
-        # is mounted under FastAPI. It sets a context variable so the Flask auth hooks
-        # can skip duplicate authorization work when FastAPI already handled it.
-        fastapi_app.add_middleware(
-            KubernetesAuthMiddleware,
-            authorizer=authorizer,
-            config_values=config_values,
-        )
-        _validate_fastapi_route_authorization(fastapi_app)
-        _validate_graphql_field_authorization()
-        return fastapi_app
-    return app
+    fastapi_app = create_fastapi_app(app)
+    fastapi_app.add_middleware(
+        KubernetesAuthMiddleware,
+        authorizer=authorizer,
+        config_values=config_values,
+    )
+    _validate_fastapi_route_authorization(fastapi_app)
+    _validate_graphql_field_authorization()
+    return fastapi_app
 
 
-__all__ = ["KubernetesAuthMiddleware", "_override_run_user", "create_app"]
+__all__ = ["KubernetesAuthMiddleware", "create_app"]

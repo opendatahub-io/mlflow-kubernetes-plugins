@@ -1,6 +1,19 @@
+import asyncio
 import os
 
 import pytest
+from mlflow_kubernetes_plugins.auth.core import _authorize_request_async
+
+
+def _authorize_request(request_context, *, authorizer, config_values):
+    """Synchronous wrapper for tests -- must not be called from a running event loop."""
+    return asyncio.run(
+        _authorize_request_async(
+            request_context,
+            authorizer=authorizer,
+            config_values=config_values,
+        )
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
