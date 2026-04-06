@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Iterable, NamedTuple
@@ -84,13 +85,33 @@ class _CacheEntry(NamedTuple):
     expires_at: float
 
 
-_AuthorizationCacheKey = tuple[str, str, str, str | None, str]
+@dataclass(frozen=True)
+class _AuthorizationCacheKey:
+    identity_hash: str
+    namespace: str
+    resource: str
+    subresource: str | None
+    verb: str
+    resource_name: str | None = None
+
+
+def _effective_resource_name_for_access_review(
+    verb: str, subresource: str | None, resource_name: str | None
+) -> str | None:
+    if resource_name is None:
+        return None
+    if verb == "watch":
+        return None
+    if verb == "create" and subresource is None:
+        return None
+    return resource_name
 
 
 class _AuthorizationCache:
-    def __init__(self, ttl_seconds: float) -> None:
+    def __init__(self, ttl_seconds: float, max_entries: int = 10_000) -> None:
         self._ttl_seconds = ttl_seconds
-        self._entries: dict[_AuthorizationCacheKey, _CacheEntry] = {}
+        self._max_entries = max_entries
+        self._entries: OrderedDict[_AuthorizationCacheKey, _CacheEntry] = OrderedDict()
         self._lock = _ReadWriteLock()
 
     def get(self, key: _AuthorizationCacheKey) -> bool | None:
@@ -120,8 +141,19 @@ class _AuthorizationCache:
     def set(self, key: _AuthorizationCacheKey, allowed: bool) -> None:
         self._lock.acquire_write()
         try:
+            now = time.time()
+            expired_keys = [
+                existing_key
+                for existing_key, entry in self._entries.items()
+                if entry.expires_at <= now
+            ]
+            for existing_key in expired_keys:
+                self._entries.pop(existing_key, None)
+            self._entries.pop(key, None)
+            while len(self._entries) >= self._max_entries:
+                self._entries.popitem(last=False)
             self._entries[key] = _CacheEntry(
-                allowed=allowed, expires_at=time.time() + self._ttl_seconds
+                allowed=allowed, expires_at=now + self._ttl_seconds
             )
         finally:
             self._lock.release_write()
@@ -223,6 +255,7 @@ class KubernetesAuthorizer:
         verb: str,
         namespace: str,
         subresource: str | None = None,
+        resource_name: str | None = None,
     ) -> bool:
         body = client.V1SelfSubjectAccessReview(
             spec=client.V1SelfSubjectAccessReviewSpec(
@@ -232,6 +265,7 @@ class KubernetesAuthorizer:
                     verb=verb,
                     namespace=namespace,
                     subresource=subresource,
+                    name=resource_name,
                 )
             )
         )
@@ -260,6 +294,7 @@ class KubernetesAuthorizer:
         verb: str,
         namespace: str,
         subresource: str | None = None,
+        resource_name: str | None = None,
     ) -> bool:
         body = client.V1SubjectAccessReview(
             spec=client.V1SubjectAccessReviewSpec(
@@ -271,6 +306,7 @@ class KubernetesAuthorizer:
                     verb=verb,
                     namespace=namespace,
                     subresource=subresource,
+                    name=resource_name,
                 ),
             )
         )
@@ -300,12 +336,23 @@ class KubernetesAuthorizer:
         verb: str,
         namespace: str,
         subresource: str | None = None,
+        resource_name: str | None = None,
     ) -> bool:
         resource = resource_type.replace("_", "")
+        effective_resource_name = _effective_resource_name_for_access_review(
+            verb, subresource, resource_name
+        )
         identity_hash = identity.subject_hash(
             self._mode, missing_user_label=self._user_header_label
         )
-        cache_key = (identity_hash, namespace, resource, subresource, verb)
+        cache_key = _AuthorizationCacheKey(
+            identity_hash=identity_hash,
+            namespace=namespace,
+            resource=resource,
+            subresource=subresource,
+            verb=verb,
+            resource_name=effective_resource_name,
+        )
 
         cached = self._cache.get(cache_key)
         if cached is not None:
@@ -314,7 +361,12 @@ class KubernetesAuthorizer:
         try:
             if self._mode == AuthorizationMode.SELF_SUBJECT_ACCESS_REVIEW:
                 allowed = self._submit_self_subject_access_review(
-                    identity.token or "", resource, verb, namespace, subresource
+                    identity.token or "",
+                    resource,
+                    verb,
+                    namespace,
+                    subresource,
+                    effective_resource_name,
                 )
             else:
                 allowed = self._submit_subject_access_review(
@@ -324,6 +376,7 @@ class KubernetesAuthorizer:
                     verb,
                     namespace,
                     subresource,
+                    effective_resource_name,
                 )
         except ApiException as exc:  # pragma: no cover - depends on live cluster
             if exc.status == 401:
@@ -354,11 +407,12 @@ class KubernetesAuthorizer:
 
         self._cache.set(cache_key, allowed)
         _logger.debug(
-            "Access review evaluated subject_hash=%s resource=%s subresource=%s namespace=%s "
-            + "verb=%s allowed=%s",
+            "Access review evaluated subject_hash=%s resource=%s subresource=%s resource_name=%s "
+            + "namespace=%s verb=%s allowed=%s",
             identity_hash,
             resource,
             subresource,
+            effective_resource_name,
             namespace,
             verb,
             allowed,
@@ -467,8 +521,4 @@ __all__ = [
     "AuthorizationMode",
     "KubernetesAuthConfig",
     "KubernetesAuthorizer",
-    "_AuthorizationCache",
-    "_CacheEntry",
-    "_create_api_client_for_subject_access_reviews",
-    "_load_kubernetes_configuration",
 ]

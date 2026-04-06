@@ -153,6 +153,18 @@ from mlflow.protos.webhooks_pb2 import (
 )
 from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
 
+from mlflow_kubernetes_plugins.auth.collection_filters import (
+    COLLECTION_POLICY_BROAD_ONLY,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    COLLECTION_POLICY_REQUEST_RUN_IDS,
+    COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS,
+    COLLECTION_POLICY_RESPONSE_DATASET_SUMMARIES,
+    COLLECTION_POLICY_RESPONSE_EXPERIMENTS,
+    COLLECTION_POLICY_RESPONSE_MODEL_VERSIONS,
+    COLLECTION_POLICY_RESPONSE_REGISTERED_MODELS,
+    COLLECTION_POLICY_RESPONSE_TRACES,
+)
 from mlflow_kubernetes_plugins.auth.constants import (
     ALLOWED_RESOURCES,
     RESOURCE_ASSISTANTS,
@@ -164,12 +176,36 @@ from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_REGISTERED_MODELS,
 )
 from mlflow_kubernetes_plugins.auth.graphql import _build_graphql_operation_rules
+from mlflow_kubernetes_plugins.auth.resource_names import (
+    RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES,
+    RESOURCE_NAME_PARSER_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,
+    RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_NEW_REGISTERED_MODEL_NAME,
+    RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME,
+    RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,
+    RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,
+    RESOURCE_NAME_PARSER_TRACE_V3_EXPERIMENT_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME,
+)
 
 
 class AuthorizationRule(NamedTuple):
     verb: str | None
     resource: str | None = None
     subresource: str | None = None
+    resource_name_parsers: tuple[str, ...] = ()
+    collection_policy: str | None = None
     override_run_user: bool = False
     apply_workspace_filter: bool = False
     requires_workspace: bool = True
@@ -234,152 +270,562 @@ def _normalize_resource_name(resource: str | None) -> str | None:
 REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[AuthorizationRule, ...]] = {
     # Experiments
     CreateExperiment: _experiments_rule("create"),
-    GetExperiment: _experiments_rule("get"),
-    GetExperimentByName: _experiments_rule("get"),
-    DeleteExperiment: _experiments_rule("delete"),
-    RestoreExperiment: _experiments_rule("update"),
-    UpdateExperiment: _experiments_rule("update"),
-    SetExperimentTag: _experiments_rule("update"),
-    DeleteExperimentTag: _experiments_rule("update"),
-    SearchExperiments: _experiments_rule("list"),
+    GetExperiment: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    GetExperimentByName: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_NAME,),
+    ),
+    DeleteExperiment: _experiments_rule(
+        "delete",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    RestoreExperiment: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    UpdateExperiment: _experiments_rule(
+        "update",
+        resource_name_parsers=(
+            RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,
+            RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME,
+        ),
+    ),
+    SetExperimentTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    DeleteExperimentTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    SearchExperiments: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_RESPONSE_EXPERIMENTS,
+    ),
     # Datasets
-    AddDatasetToExperiments: (_datasets_rule("update"), _experiments_rule("update")),
-    CreateDataset: _datasets_rule("create"),
-    DeleteDataset: _datasets_rule("delete"),
-    DeleteDatasetRecords: _datasets_rule("update"),
-    DeleteDatasetTag: _datasets_rule("update"),
-    RemoveDatasetFromExperiments: (_datasets_rule("update"), _experiments_rule("update")),
-    SetDatasetTags: _datasets_rule("update"),
-    UpsertDatasetRecords: _datasets_rule("update"),
+    AddDatasetToExperiments: (
+        _datasets_rule(
+            "update",
+            resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+        ),
+        _experiments_rule(
+            "update",
+            resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES,),
+        ),
+    ),
+    CreateDataset: _datasets_rule(
+        "create",
+    ),
+    DeleteDataset: _datasets_rule(
+        "delete",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    DeleteDatasetRecords: _datasets_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    DeleteDatasetTag: _datasets_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    RemoveDatasetFromExperiments: (
+        _datasets_rule(
+            "update",
+            resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+        ),
+        _experiments_rule(
+            "update",
+            resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES,),
+        ),
+    ),
+    SetDatasetTags: _datasets_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    UpsertDatasetRecords: _datasets_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
     # Experiment child resources (write operations)
-    CreateAssessment: _experiments_rule("update"),
-    UpdateAssessment: _experiments_rule("update"),
-    CreateRun: _experiments_rule("update", override_run_user=True),
-    DeleteRun: _experiments_rule("update"),
-    RestoreRun: _experiments_rule("update"),
-    UpdateRun: _experiments_rule("update"),
-    LogMetric: _experiments_rule("update"),
-    LogBatch: _experiments_rule("update"),
-    LogModel: _experiments_rule("update"),
-    SetTag: _experiments_rule("update"),
-    DeleteTag: _experiments_rule("update"),
-    LogParam: _experiments_rule("update"),
-    CreateLoggedModel: _experiments_rule("update"),
-    DeleteLoggedModel: _experiments_rule("update"),
-    FinalizeLoggedModel: _experiments_rule("update"),
-    DeleteLoggedModelTag: _experiments_rule("update"),
-    SetLoggedModelTags: _experiments_rule("update"),
-    LogLoggedModelParamsRequest: _experiments_rule("update"),
-    RegisterScorer: _experiments_rule("update"),
-    DeleteScorer: _experiments_rule("update"),
-    EndTrace: _experiments_rule("update"),
-    LinkPromptsToTrace: _experiments_rule("update"),
-    LinkTracesToRun: _experiments_rule("update"),
-    DeleteTraceTag: _experiments_rule("update"),
-    DeleteTraceTagV3: _experiments_rule("update"),
-    DeleteTraces: _experiments_rule("update"),
-    DeleteTracesV3: _experiments_rule("update"),
-    SetTraceTag: _experiments_rule("update"),
-    SetTraceTagV3: _experiments_rule("update"),
-    StartTrace: _experiments_rule("update"),
-    StartTraceV3: _experiments_rule("update"),
-    LogInputs: _experiments_rule("update"),
-    LogOutputs: _experiments_rule("update"),
-    CompleteMultipartUpload: _experiments_rule("update"),
-    CreateMultipartUpload: _experiments_rule("update"),
-    AbortMultipartUpload: _experiments_rule("update"),
-    DeleteArtifact: _experiments_rule("update"),
-    UploadArtifact: _experiments_rule("update"),
+    CreateAssessment: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    UpdateAssessment: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    CreateRun: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+        override_run_user=True,
+    ),
+    DeleteRun: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    RestoreRun: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    UpdateRun: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LogMetric: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LogBatch: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LogModel: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    SetTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DeleteTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LogParam: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    CreateLoggedModel: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    DeleteLoggedModel: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    FinalizeLoggedModel: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DeleteLoggedModelTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    SetLoggedModelTags: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LogLoggedModelParamsRequest: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    RegisterScorer: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    DeleteScorer: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    EndTrace: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LinkPromptsToTrace: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LinkTracesToRun: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DeleteTraceTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DeleteTraceTagV3: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DeleteTraces: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    DeleteTracesV3: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    SetTraceTag: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,),
+    ),
+    SetTraceTagV3: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    StartTrace: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    StartTraceV3: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_V3_EXPERIMENT_ID_TO_NAME,),
+    ),
+    LogInputs: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    LogOutputs: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    CompleteMultipartUpload: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
+    CreateMultipartUpload: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
+    AbortMultipartUpload: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
+    DeleteArtifact: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
+    UploadArtifact: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
     # Experiment child resources (single-experiment reads)
-    GetAssessmentRequest: _experiments_rule("get"),
-    GetRun: _experiments_rule("get"),
-    GetMetricHistory: _experiments_rule("get"),
-    ListArtifacts: _experiments_rule("get"),
-    GetLoggedModel: _experiments_rule("get"),
-    ListLoggedModelArtifacts: _experiments_rule("get"),
-    ListScorers: _experiments_rule("get"),
-    GetScorer: _experiments_rule("get"),
-    ListScorerVersions: _experiments_rule("get"),
-    GetTraceInfo: _experiments_rule("get"),
-    GetTraceInfoV3: _experiments_rule("get"),
-    DownloadArtifact: _experiments_rule("get"),
-    ListArtifactsMlflowArtifacts: _experiments_rule("get"),
+    GetAssessmentRequest: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    GetRun: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    GetMetricHistory: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ListArtifacts: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    GetLoggedModel: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ListLoggedModelArtifacts: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ListScorers: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    GetScorer: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ListScorerVersions: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    GetTraceInfo: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,),
+    ),
+    GetTraceInfoV3: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DownloadArtifact: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ListArtifactsMlflowArtifacts: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+    ),
     # Dataset reads
-    GetDataset: _datasets_rule("get"),
-    GetDatasetExperimentIds: _datasets_rule("list"),
-    GetDatasetRecords: _datasets_rule("list"),
-    SearchDatasets: _datasets_rule("list"),
-    SearchEvaluationDatasets: _datasets_rule("list"),
+    GetDataset: _datasets_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    GetDatasetExperimentIds: _datasets_rule(
+        "list",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    GetDatasetRecords: _datasets_rule(
+        "list",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,),
+    ),
+    SearchDatasets: _datasets_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
+    SearchEvaluationDatasets: _datasets_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_RESPONSE_DATASET_SUMMARIES,
+    ),
     # Experiment child resources (multi-experiment reads)
-    SearchLoggedModels: _experiments_rule("list"),
-    BatchGetTraces: _experiments_rule("list"),
-    CalculateTraceFilterCorrelation: _experiments_rule("list"),
-    QueryTraceMetrics: _experiments_rule("list"),
-    SearchTraces: _experiments_rule("list"),
-    SearchTracesV3: _experiments_rule("list"),
-    GetMetricHistoryBulkInterval: _experiments_rule("list"),
-    SearchRuns: _experiments_rule("list"),
+    SearchLoggedModels: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
+    BatchGetTraces: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_RESPONSE_TRACES,
+    ),
+    CalculateTraceFilterCorrelation: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
+    QueryTraceMetrics: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
+    SearchTraces: _experiments_rule("list", collection_policy=COLLECTION_POLICY_RESPONSE_TRACES),
+    SearchTracesV3: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS,
+    ),
+    GetMetricHistoryBulkInterval: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+    ),
+    SearchRuns: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
     # Model registry
     # Registered models
-    CreateRegisteredModel: _registered_models_rule("create"),
-    GetRegisteredModel: _registered_models_rule("get"),
-    DeleteRegisteredModel: _registered_models_rule("delete"),
-    UpdateRegisteredModel: _registered_models_rule("update"),
-    RenameRegisteredModel: _registered_models_rule("update"),
-    SearchRegisteredModels: _registered_models_rule("list"),
+    CreateRegisteredModel: _registered_models_rule(
+        "create",
+    ),
+    GetRegisteredModel: _registered_models_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    DeleteRegisteredModel: _registered_models_rule(
+        "delete",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    UpdateRegisteredModel: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    RenameRegisteredModel: _registered_models_rule(
+        "update",
+        resource_name_parsers=(
+            RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,
+            RESOURCE_NAME_PARSER_NEW_REGISTERED_MODEL_NAME,
+        ),
+    ),
+    SearchRegisteredModels: _registered_models_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_RESPONSE_REGISTERED_MODELS,
+    ),
     # Registered model child resources (writes)
-    CreateModelVersion: _registered_models_rule("update"),
-    DeleteModelVersion: _registered_models_rule("update"),
-    UpdateModelVersion: _registered_models_rule("update"),
-    TransitionModelVersionStage: _registered_models_rule("update"),
-    SetRegisteredModelTag: _registered_models_rule("update"),
-    DeleteRegisteredModelTag: _registered_models_rule("update"),
-    SetModelVersionTag: _registered_models_rule("update"),
-    DeleteModelVersionTag: _registered_models_rule("update"),
-    SetRegisteredModelAlias: _registered_models_rule("update"),
-    DeleteRegisteredModelAlias: _registered_models_rule("update"),
-    CreateWebhook: _registered_models_rule("update"),
-    DeleteWebhook: _registered_models_rule("update"),
-    TestWebhook: _registered_models_rule("update"),
-    UpdateWebhook: _registered_models_rule("update"),
+    CreateModelVersion: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    DeleteModelVersion: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    UpdateModelVersion: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    TransitionModelVersionStage: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    SetRegisteredModelTag: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    DeleteRegisteredModelTag: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    SetModelVersionTag: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    DeleteModelVersionTag: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    SetRegisteredModelAlias: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    DeleteRegisteredModelAlias: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    CreateWebhook: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    DeleteWebhook: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME,),
+    ),
+    TestWebhook: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME,),
+    ),
+    UpdateWebhook: _registered_models_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME,),
+    ),
     # Registered model child resources (reads)
-    GetModelVersion: _registered_models_rule("get"),
-    GetModelVersionDownloadUri: _registered_models_rule("get"),
-    GetModelVersionByAlias: _registered_models_rule("get"),
-    GetWebhook: _registered_models_rule("get"),
+    GetModelVersion: _registered_models_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    GetModelVersionDownloadUri: _registered_models_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    GetModelVersionByAlias: _registered_models_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    GetWebhook: _registered_models_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME,),
+    ),
     # Registered model child resources (lists)
-    GetLatestVersions: _registered_models_rule("list"),
-    ListWebhooks: _registered_models_rule("list"),
+    GetLatestVersions: _registered_models_rule(
+        "list",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    ListWebhooks: _registered_models_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_BROAD_ONLY,
+    ),
     # Gateway
-    CreateGatewaySecret: _gateway_secrets_rule("create"),
-    GetGatewaySecretInfo: _gateway_secrets_rule("get"),
-    UpdateGatewaySecret: _gateway_secrets_rule("update"),
-    DeleteGatewaySecret: _gateway_secrets_rule("delete"),
-    ListGatewaySecretInfos: _gateway_secrets_rule("list"),
-    CreateGatewayEndpoint: _gateway_endpoints_rule("create"),
-    GetGatewayEndpoint: _gateway_endpoints_rule("get"),
-    UpdateGatewayEndpoint: _gateway_endpoints_rule("update"),
-    DeleteGatewayEndpoint: _gateway_endpoints_rule("delete"),
-    ListGatewayEndpoints: _gateway_endpoints_rule("list"),
-    CreateGatewayModelDefinition: _gateway_model_definitions_rule("create"),
-    GetGatewayModelDefinition: _gateway_model_definitions_rule("get"),
-    UpdateGatewayModelDefinition: _gateway_model_definitions_rule("update"),
-    DeleteGatewayModelDefinition: _gateway_model_definitions_rule("delete"),
-    ListGatewayModelDefinitions: _gateway_model_definitions_rule("list"),
-    AttachModelToGatewayEndpoint: _gateway_endpoints_rule("update"),
-    DetachModelFromGatewayEndpoint: _gateway_endpoints_rule("update"),
+    CreateGatewaySecret: _gateway_secrets_rule(
+        "create",
+    ),
+    GetGatewaySecretInfo: _gateway_secrets_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,),
+    ),
+    UpdateGatewaySecret: _gateway_secrets_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,),
+    ),
+    DeleteGatewaySecret: _gateway_secrets_rule(
+        "delete",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,),
+    ),
+    ListGatewaySecretInfos: _gateway_secrets_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_BROAD_ONLY,
+    ),
+    CreateGatewayEndpoint: _gateway_endpoints_rule(
+        "create",
+    ),
+    GetGatewayEndpoint: _gateway_endpoints_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    UpdateGatewayEndpoint: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    DeleteGatewayEndpoint: _gateway_endpoints_rule(
+        "delete",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    ListGatewayEndpoints: _gateway_endpoints_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_BROAD_ONLY,
+    ),
+    CreateGatewayModelDefinition: _gateway_model_definitions_rule(
+        "create",
+    ),
+    GetGatewayModelDefinition: _gateway_model_definitions_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,),
+    ),
+    UpdateGatewayModelDefinition: _gateway_model_definitions_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,),
+    ),
+    DeleteGatewayModelDefinition: _gateway_model_definitions_rule(
+        "delete",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,),
+    ),
+    ListGatewayModelDefinitions: _gateway_model_definitions_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_BROAD_ONLY,
+    ),
+    AttachModelToGatewayEndpoint: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    DetachModelFromGatewayEndpoint: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
     # Bindings and tags modify the endpoint, not create/delete it, so use update verb
-    CreateGatewayEndpointBinding: _gateway_endpoints_rule("update"),
-    DeleteGatewayEndpointBinding: _gateway_endpoints_rule("update"),
-    ListGatewayEndpointBindings: _gateway_endpoints_rule("list"),
-    SetGatewayEndpointTag: _gateway_endpoints_rule("update"),
-    DeleteGatewayEndpointTag: _gateway_endpoints_rule("update"),
+    CreateGatewayEndpointBinding: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    DeleteGatewayEndpointBinding: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    ListGatewayEndpointBindings: _gateway_endpoints_rule(
+        "list",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    SetGatewayEndpointTag: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
+    DeleteGatewayEndpointTag: _gateway_endpoints_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+    ),
     # Prompt optimization jobs (experiment-scoped, matching upstream)
-    CreatePromptOptimizationJob: _experiments_rule("update"),
-    GetPromptOptimizationJob: _experiments_rule("get"),
-    SearchPromptOptimizationJobs: _experiments_rule("list"),
-    CancelPromptOptimizationJob: _experiments_rule("update"),
-    DeletePromptOptimizationJob: _experiments_rule("update"),
+    CreatePromptOptimizationJob: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    GetPromptOptimizationJob: _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME,),
+    ),
+    SearchPromptOptimizationJobs: _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+    ),
+    CancelPromptOptimizationJob: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME,),
+    ),
+    DeletePromptOptimizationJob: _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME,),
+    ),
     # Workspaces
     # ListWorkspaces omits a direct RBAC verb/namespace check because a single
     # SelfSubjectAccessReview cannot cover the full list. The response is instead filtered per
@@ -398,67 +844,146 @@ PATH_AUTHORIZATION_RULES: dict[
     # Unprotected endpoints (no authorization required)
     ("/version", "GET"): AuthorizationRule(None),
     ("/server-info", "GET"): AuthorizationRule(None),
-    ("/api/2.0/mlflow/model-versions/search", "GET"): _registered_models_rule("list"),
-    ("/ajax-api/2.0/mlflow/model-versions/search", "GET"): _registered_models_rule("list"),
+    ("/api/2.0/mlflow/model-versions/search", "GET"): _registered_models_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_RESPONSE_MODEL_VERSIONS,
+    ),
+    ("/ajax-api/2.0/mlflow/model-versions/search", "GET"): _registered_models_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_RESPONSE_MODEL_VERSIONS,
+    ),
     ("/graphql", "GET"): _experiments_rule("get"),
     ("/graphql", "POST"): _experiments_rule("get"),
     ("/api/2.0/mlflow/gateway-proxy", "GET"): _gateway_endpoints_use_rule(),
-    ("/api/2.0/mlflow/gateway-proxy", "POST"): _gateway_endpoints_use_rule(),
+    ("/api/2.0/mlflow/gateway-proxy", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
     ("/ajax-api/2.0/mlflow/gateway-proxy", "GET"): _gateway_endpoints_use_rule(),
-    ("/ajax-api/2.0/mlflow/gateway-proxy", "POST"): _gateway_endpoints_use_rule(),
+    ("/ajax-api/2.0/mlflow/gateway-proxy", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
     # Gateway invocation routes (FastAPI)
-    ("/gateway/<endpoint_name>/mlflow/invocations", "POST"): _gateway_endpoints_use_rule(),
-    ("/gateway/mlflow/v1/chat/completions", "POST"): _gateway_endpoints_use_rule(),
-    ("/gateway/openai/v1/chat/completions", "POST"): _gateway_endpoints_use_rule(),
-    ("/gateway/openai/v1/embeddings", "POST"): _gateway_endpoints_use_rule(),
-    ("/gateway/openai/v1/responses", "POST"): _gateway_endpoints_use_rule(),
-    ("/gateway/anthropic/v1/messages", "POST"): _gateway_endpoints_use_rule(),
+    ("/gateway/<endpoint_name>/mlflow/invocations", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
+    ("/gateway/mlflow/v1/chat/completions", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
+    ("/gateway/openai/v1/chat/completions", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
+    ("/gateway/openai/v1/embeddings", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
+    ("/gateway/openai/v1/responses", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
+    ("/gateway/anthropic/v1/messages", "POST"): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
     (
         "/gateway/gemini/v1beta/models/<endpoint_name>:generateContent",
         "POST",
-    ): _gateway_endpoints_use_rule(),
+    ): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
     (
         "/gateway/gemini/v1beta/models/<endpoint_name>:streamGenerateContent",
         "POST",
-    ): _gateway_endpoints_use_rule(),
-    ("/get-artifact", "GET"): _experiments_rule("get"),
-    ("/model-versions/get-artifact", "GET"): _registered_models_rule("get"),
-    ("/ajax-api/2.0/mlflow/upload-artifact", "POST"): _experiments_rule("update"),
-    ("/ajax-api/2.0/mlflow/get-trace-artifact", "GET"): _experiments_rule("get"),
-    ("/ajax-api/3.0/mlflow/get-trace-artifact", "GET"): _experiments_rule("get"),
-    ("/ajax-api/2.0/mlflow/metrics/get-history-bulk", "GET"): _experiments_rule("list"),
+    ): _gateway_endpoints_use_rule(
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,),
+    ),
+    ("/get-artifact", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ("/model-versions/get-artifact", "GET"): _registered_models_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,),
+    ),
+    ("/ajax-api/2.0/mlflow/upload-artifact", "POST"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ("/ajax-api/2.0/mlflow/get-trace-artifact", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ("/ajax-api/3.0/mlflow/get-trace-artifact", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ("/ajax-api/2.0/mlflow/metrics/get-history-bulk", "GET"): _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+    ),
     (
         "/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval",
         "GET",
-    ): _experiments_rule("list"),
-    ("/ajax-api/2.0/mlflow/runs/create-promptlab-run", "POST"): _experiments_rule("update"),
+    ): _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+    ),
+    ("/ajax-api/2.0/mlflow/runs/create-promptlab-run", "POST"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
     (
         "/ajax-api/2.0/mlflow/logged-models/<model_id>/artifacts/files",
         "GET",
-    ): _experiments_rule("get"),
-    ("/api/2.0/mlflow/experiments/search-datasets", "POST"): _datasets_rule("list"),
-    ("/ajax-api/2.0/mlflow/experiments/search-datasets", "POST"): _datasets_rule("list"),
+    ): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ("/api/2.0/mlflow/experiments/search-datasets", "POST"): _datasets_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
+    ("/ajax-api/2.0/mlflow/experiments/search-datasets", "POST"): _datasets_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+    ),
     # Assessment deletion (path-parameterized, not matched by handler rules)
     ("/api/3.0/mlflow/traces/<trace_id>/assessments/<assessment_id>", "DELETE"): _experiments_rule(
-        "update"
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
     ),
     ("/ajax-api/3.0/mlflow/traces/<trace_id>/assessments/<assessment_id>", "DELETE"): (
-        _experiments_rule("update")
+        _experiments_rule(
+            "update",
+            resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+        )
     ),
     # Trace retrieval endpoints (REST v3)
-    ("/api/3.0/mlflow/traces/get", "GET"): _experiments_rule("get"),
-    ("/ajax-api/3.0/mlflow/traces/get", "GET"): _experiments_rule("get"),
+    ("/api/3.0/mlflow/traces/get", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
+    ("/ajax-api/3.0/mlflow/traces/get", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME,),
+    ),
     # OTEL trace ingestion endpoint
-    (OTLP_TRACES_PATH, "POST"): _experiments_rule("update"),
-    # Job API endpoints (FastAPI router, experiment-scoped, matching upstream)
+    (OTLP_TRACES_PATH, "POST"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME,),
+    ),
+    # Generic Job API endpoints (FastAPI router). Keep the generic create/get/cancel routes broad,
+    # but preserve the prompt-optimization search route's experiment-scoped collection filtering.
     ("/ajax-api/3.0/jobs", "POST"): _experiments_rule("update"),
     ("/ajax-api/3.0/jobs/", "POST"): _experiments_rule("update"),
     ("/ajax-api/3.0/jobs/<job_id>", "GET"): _experiments_rule("get"),
     ("/ajax-api/3.0/jobs/<job_id>/", "GET"): _experiments_rule("get"),
     ("/ajax-api/3.0/jobs/cancel/<job_id>", "PATCH"): _experiments_rule("update"),
     ("/ajax-api/3.0/jobs/cancel/<job_id>/", "PATCH"): _experiments_rule("update"),
-    ("/ajax-api/3.0/jobs/search", "POST"): _experiments_rule("list"),
-    ("/ajax-api/3.0/jobs/search/", "POST"): _experiments_rule("list"),
+    ("/ajax-api/3.0/jobs/search", "POST"): _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+    ),
+    ("/ajax-api/3.0/jobs/search/", "POST"): _experiments_rule(
+        "list",
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+    ),
     # Assistant API endpoints (FastAPI router, currently localhost-only)
     ("/ajax-api/3.0/mlflow/assistant/message", "POST"): _assistants_rule("create"),
     (
@@ -476,19 +1001,36 @@ PATH_AUTHORIZATION_RULES: dict[
     ("/ajax-api/3.0/mlflow/assistant/skills/install", "POST"): _assistants_rule("update"),
     # Gateway discovery/config endpoints
     ("/ajax-api/3.0/mlflow/gateway/supported-providers", "GET"): _gateway_model_definitions_rule(
-        "list"
+        "list",
+        collection_policy=COLLECTION_POLICY_BROAD_ONLY,
     ),
     ("/ajax-api/3.0/mlflow/gateway/supported-models", "GET"): _gateway_model_definitions_rule(
-        "list"
+        "list",
+        collection_policy=COLLECTION_POLICY_BROAD_ONLY,
     ),
     ("/ajax-api/3.0/mlflow/gateway/provider-config", "GET"): _gateway_model_definitions_rule("get"),
     ("/ajax-api/3.0/mlflow/gateway/secrets/config", "GET"): _gateway_secrets_rule("get"),
     # Scorers (online config + invocation) - experiment-scoped
-    ("/ajax-api/3.0/mlflow/scorers/online-configs", "GET"): _experiments_rule("get"),
-    ("/api/3.0/mlflow/scorers/online-configs", "GET"): _experiments_rule("get"),
-    ("/ajax-api/3.0/mlflow/scorers/online-config", "PUT"): _experiments_rule("update"),
-    ("/api/3.0/mlflow/scorers/online-config", "PUT"): _experiments_rule("update"),
-    ("/ajax-api/3.0/mlflow/scorer/invoke", "POST"): _experiments_rule("update"),
+    ("/ajax-api/3.0/mlflow/scorers/online-configs", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ("/api/3.0/mlflow/scorers/online-configs", "GET"): _experiments_rule(
+        "get",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ("/ajax-api/3.0/mlflow/scorers/online-config", "PUT"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ("/api/3.0/mlflow/scorers/online-config", "PUT"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ("/ajax-api/3.0/mlflow/scorer/invoke", "POST"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
     # Demo data generation and deletion
     ("/ajax-api/3.0/mlflow/demo/generate", "POST"): (
         _experiments_rule("create"),

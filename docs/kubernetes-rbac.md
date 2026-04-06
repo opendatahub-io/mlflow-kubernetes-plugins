@@ -33,6 +33,52 @@ Reusable example:
 
 - [`examples/team-a-workspace.yaml`](../examples/team-a-workspace.yaml)
 
+## Fine-Grained Resource Names
+
+Caller RBAC can also use Kubernetes `resourceNames` for fine-grained MLflow access.
+
+Important details:
+
+- Kubernetes ignores `resourceNames` on `create` without subresource because the object does not yet exist. The plugin mirrors this: name-scoped RBAC applies to `get`, `update`, `delete`, `list`, and subresource verbs like `create` on `<resource>/use`, but not bare `create`.
+- Use the MLflow resource name, not the MLflow ID
+- For `datasets`, the `resourceName` is the dataset name
+- For `experiments`, the `resourceName` is the experiment name
+- For `registeredmodels`, the `resourceName` is the registered model name
+- For `gatewaysecrets`, the `resourceName` is the gateway secret name
+- For `gatewayendpoints`, the `resourceName` is the gateway endpoint name
+- For `gatewaymodeldefinitions`, the `resourceName` is the gateway model definition name
+
+This is most useful for single-object operations such as:
+
+- reading a specific dataset, experiment, registered model, or gateway resource
+- creating or updating runs, traces, tags, scorers, and other experiment-scoped writes
+- creating or updating model versions, webhooks, and many gateway resources by name
+- reading artifacts or trace details that resolve back to one experiment
+
+Collection endpoints behave differently:
+
+- many search and list endpoints now filter request inputs or response items down to the readable experiments
+- some endpoints still require broader `list` access and may return `Permission denied` for callers that only have named resources
+
+Use the example manifest below as a starting point for both broad workspace access and name-scoped experiment access:
+
+- [`examples/team-a-workspace.yaml`](../examples/team-a-workspace.yaml)
+
+Example: allow an agent to send traces only to the `exp-a` experiment in the `team-a` workspace:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mlflow-trace-agent
+  namespace: team-a
+rules:
+  - apiGroups: ["mlflow.kubeflow.org"]
+    resources: ["experiments"]
+    resourceNames: ["exp-a"]
+    verbs: ["update"]
+```
+
 ## Trusted Proxy Mode
 
 When `MLFLOW_K8S_AUTH_AUTHORIZATION_MODE=subject_access_review`, the MLflow server must also be allowed to create `subjectaccessreviews.authorization.k8s.io`.

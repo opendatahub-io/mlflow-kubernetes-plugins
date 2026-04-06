@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
@@ -37,6 +38,7 @@ from mlflow_kubernetes_plugins.auth.rules import (
 _AUTH_RULES: dict[tuple[str, str], list[AuthorizationRule]] = {}
 _AUTH_REGEX_RULES: list[tuple[re.Pattern[str], str, list[AuthorizationRule]]] = []
 _HANDLER_RULES: dict[object, list[AuthorizationRule]] = {}
+_PATH_PARAM_PATTERNS: list[tuple[re.Pattern[str], str]] = []
 _RULES_COMPILED = False
 
 
@@ -47,6 +49,7 @@ def _reset_compiled_rules() -> None:
     _AUTH_RULES.clear()
     _AUTH_REGEX_RULES.clear()
     _HANDLER_RULES.clear()
+    _PATH_PARAM_PATTERNS.clear()
 
 
 def _compile_authorization_rules() -> None:
@@ -59,7 +62,18 @@ def _compile_authorization_rules() -> None:
 
     exact_rules: dict[tuple[str, str], list[AuthorizationRule]] = {}
     regex_rules: list[tuple[re.Pattern[str], str, list[AuthorizationRule]]] = []
+    path_param_patterns: list[tuple[re.Pattern[str], str]] = []
+    seen_path_param_patterns: set[tuple[str, str]] = set()
     uncovered: list[tuple[str, str]] = []
+
+    def _register_path_param_pattern(path: str, method: str) -> None:
+        if "<" not in path:
+            return
+        key = (path, method)
+        if key in seen_path_param_patterns:
+            return
+        seen_path_param_patterns.add(key)
+        path_param_patterns.append((_compile_named_path_pattern(path), method))
 
     def _get_request_authorization_handler(request_class):
         # Record the AuthorizationRule associated with the concrete Flask handler so we can
@@ -96,6 +110,7 @@ def _compile_authorization_rules() -> None:
             # Regex patterns are required for templated paths; literal paths can be matched exactly.
             if "<" in canonical_path:
                 regex_rules.append((_re_compile_path(canonical_path), method, rules))
+                _register_path_param_pattern(canonical_path, method)
             else:
                 exact_rules[(canonical_path, method)] = rules
 
@@ -122,12 +137,15 @@ def _compile_authorization_rules() -> None:
         ]
         if missing_methods:
             uncovered.extend(missing_methods)
+        for method in methods:
+            _register_path_param_pattern(canonical_path, method)
 
     # Explicit allowlist entries (with and without templated segments) always win.
     for (path, method), path_value in PATH_AUTHORIZATION_RULES.items():
         normalized = _normalize_rules(path_value)
         if "<" in path:
             regex_rules.append((_re_compile_path(path), method, normalized))
+            _register_path_param_pattern(path, method)
         else:
             exact_rules[(path, method)] = normalized
 
@@ -141,6 +159,7 @@ def _compile_authorization_rules() -> None:
 
     _AUTH_RULES.update(exact_rules)
     _AUTH_REGEX_RULES.extend(regex_rules)
+    _PATH_PARAM_PATTERNS.extend(path_param_patterns)
     _RULES_COMPILED = True
 
 
@@ -173,6 +192,36 @@ def _validate_fastapi_route_authorization(fastapi_app: FastAPI) -> None:
             f"{formatted}. Update PATH_AUTHORIZATION_RULES before enabling the plugin.",
             error_code=databricks_pb2.INTERNAL_ERROR,
         )
+
+
+@lru_cache(maxsize=None)
+def _compile_named_path_pattern(path: str) -> re.Pattern[str]:
+    pattern_parts: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"<([^>]+)>", path):
+        pattern_parts.append(re.escape(path[cursor : match.start()]))
+        token = match.group(1)
+        if token.startswith("path:"):
+            name = token[5:]
+            pattern_parts.append(f"(?P<{name}>.+)")
+        else:
+            pattern_parts.append(f"(?P<{token}>[^/]+)")
+        cursor = match.end()
+    pattern_parts.append(re.escape(path[cursor:]))
+    return re.compile("".join(pattern_parts))
+
+
+def _extract_path_params(request_path: str, method: str) -> dict[str, str]:
+    """Extract templated path parameters from an already-canonical request path."""
+    for pattern, candidate_method in _PATH_PARAM_PATTERNS:
+        if candidate_method != method:
+            continue
+        match = pattern.fullmatch(request_path)
+        if match is not None:
+            return {
+                key: value for key, value in match.groupdict().items() if value is not None
+            }
+    return {}
 
 
 def _find_authorization_rules(
@@ -218,8 +267,10 @@ __all__ = [
     "_AUTH_REGEX_RULES",
     "_AUTH_RULES",
     "_HANDLER_RULES",
+    "_PATH_PARAM_PATTERNS",
     "_RULES_COMPILED",
     "_compile_authorization_rules",
+    "_extract_path_params",
     "_find_authorization_rules",
     "_reset_compiled_rules",
     "_validate_fastapi_route_authorization",

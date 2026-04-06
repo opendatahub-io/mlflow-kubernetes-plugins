@@ -8,6 +8,10 @@ The `kubernetes-auth` plugin wraps the MLflow server with authorization checks b
 - supports direct `SelfSubjectAccessReview` checks against the caller token
 - supports trusted-proxy `SubjectAccessReview` mode using forwarded user and group headers
 - checks MLflow operations against resources in the `mlflow.kubeflow.org` API group
+- supports broad workspace access and many fine-grained `resourceNames` checks for experiments,
+  datasets, registered models, and gateway resources
+- filters many collection requests and responses so partially authorized callers can still browse
+  the MLflow objects they are allowed to see
 - filters workspace lists down to namespaces the caller can access
 - rewrites run ownership so the authenticated caller becomes the MLflow run owner
 - blocks workspace create, update, and delete operations because namespaces remain externally managed
@@ -41,6 +45,10 @@ mlflow server \
 ### SelfSubjectAccessReview
 
 This is the default mode. The plugin sends the caller's bearer token to the Kubernetes API and asks whether that identity can perform the requested action in the requested namespace.
+
+For supported single-object MLflow operations, the plugin first checks the broad workspace-scoped
+permission and then retries with a specific Kubernetes `resourceAttributes.name` derived from the
+MLflow request.
 
 Use this mode when MLflow receives end-user or workload tokens directly.
 
@@ -78,6 +86,8 @@ curl \
 
 - workspace listings are filtered by the caller's visible namespaces
 - GraphQL and FastAPI routes are covered in addition to the classic Flask endpoints
+- GraphQL collection fields use server-side filtering, while single-object GraphQL reads keep explicit request-time authorization
 - gateway resource access uses `use` subresources for fine-grained RBAC checks
+- startup validation fails if a new protected GraphQL field is added without explicit authorization policy coverage
 
 For the Kubernetes permissions required by the server and callers, see [`kubernetes-rbac.md`](kubernetes-rbac.md).
