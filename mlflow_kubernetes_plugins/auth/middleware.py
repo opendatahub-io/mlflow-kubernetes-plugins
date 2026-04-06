@@ -6,6 +6,7 @@ import atexit
 import copy
 import json
 import logging
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
@@ -13,6 +14,7 @@ from fastapi import Request
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
 from mlflow.server import app as mlflow_app
+from mlflow.server import handlers as mlflow_handlers
 from mlflow.server.fastapi_app import create_fastapi_app
 from mlflow.server.workspace_helpers import WORKSPACE_HEADER_NAME, resolve_workspace_from_header
 from mlflow.utils import workspace_context
@@ -41,6 +43,9 @@ from mlflow_kubernetes_plugins.auth.core import (
     _is_unprotected_path,
 )
 from mlflow_kubernetes_plugins.auth.graphql import (
+    get_graphql_authorization_middleware as _get_graphql_authorization_middleware,
+)
+from mlflow_kubernetes_plugins.auth.graphql import (
     validate_graphql_field_authorization as _validate_graphql_field_authorization,
 )
 from mlflow_kubernetes_plugins.auth.request_context import build_fastapi_authorization_request
@@ -52,7 +57,10 @@ if TYPE_CHECKING:
 _REQUEST_RAW_BODY_STATE_KEY = "mlflow_k8s_raw_body"
 _REQUEST_JSON_BODY_STATE_KEY = "mlflow_k8s_json_body"
 _REQUEST_BODY_LOADED_STATE_KEY = "mlflow_k8s_body_loaded"
-
+_GRAPHQL_AUTHORIZER: ContextVar[KubernetesAuthorizer | None] = ContextVar(
+    "mlflow_k8s_graphql_authorizer",
+    default=None,
+)
 
 def _replace_scope_headers(scope: Scope, updates: dict[str, str]) -> None:
     """Replace (or add) ASGI scope headers, matching case-insensitively."""
@@ -346,6 +354,7 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                     config_values=self.config_values,
                 )
                 _AUTHORIZATION_HANDLED.set(auth_result)
+                graphql_authorizer_token = _GRAPHQL_AUTHORIZER.set(self.authorizer)
             except MlflowException as exc:
                 if workspace_set:
                     workspace_context.clear_server_request_workspace()
@@ -377,6 +386,7 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
             finally:
                 if workspace_set:
                     workspace_context.clear_server_request_workspace()
+                _GRAPHQL_AUTHORIZER.reset(graphql_authorizer_token)
             await self._apply_response_authorization_filters(response, auth_result=auth_result)
             apply_response_cache_updates(
                 auth_result.request_context,
@@ -386,6 +396,12 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             _AUTHORIZATION_HANDLED.reset(authorization_token)
+
+def _registered_graphql_auth_middleware():
+    authorizer = _GRAPHQL_AUTHORIZER.get()
+    if authorizer is None:
+        return []
+    return _get_graphql_authorization_middleware(authorizer)
 
 
 def create_app(app: Flask | None = None):
@@ -400,6 +416,7 @@ def create_app(app: Flask | None = None):
     config_values = KubernetesAuthConfig.from_env()
     authorizer = KubernetesAuthorizer(config_values=config_values)
     atexit.register(authorizer.close)
+    mlflow_handlers._get_graphql_auth_middleware = _registered_graphql_auth_middleware
 
     _compile_authorization_rules()
     fastapi_app = create_fastapi_app(app)
