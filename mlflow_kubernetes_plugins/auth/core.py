@@ -22,6 +22,11 @@ from mlflow_kubernetes_plugins.auth.authorizer import (
     KubernetesAuthConfig,
     KubernetesAuthorizer,
 )
+from mlflow_kubernetes_plugins.auth.collection_filters import (
+    apply_request_collection_filter,
+    is_graphql_collection_policy,
+    is_response_filter_policy,
+)
 from mlflow_kubernetes_plugins.auth.constants import (
     DEFAULT_REMOTE_GROUPS_SEPARATOR,
     RESOURCE_GATEWAY_ENDPOINTS,
@@ -43,6 +48,12 @@ from mlflow_kubernetes_plugins.auth.constants import (
 from mlflow_kubernetes_plugins.auth.request_context import (
     AuthorizationRequest,
     _build_graphql_payload,
+)
+from mlflow_kubernetes_plugins.auth.resource_names import (
+    ResourceNameResolutionError,
+    resolve_gateway_model_definition_names_for_use,
+    resolve_gateway_secret_names_for_use,
+    resolve_resource_names,
 )
 from mlflow_kubernetes_plugins.auth.rules import (
     AuthorizationRule,
@@ -254,6 +265,7 @@ class _AuthorizationResult:
     rules: list[AuthorizationRule]
     request_context: AuthorizationRequest
     username: str | None
+    response_filter_required: bool = False
 
     @property
     def token(self) -> str | None:
@@ -337,9 +349,10 @@ def _enforce_gateway_dependency_permissions(
     """
     Enforce cross-resource dependency permissions for gateway operations.
 
-    This mirrors the basic auth plugin's USE permission level via the 'use' subresource:
-    - CreateGatewayEndpoint/UpdateGatewayEndpoint: requires USE on model definitions
-    - CreateGatewayModelDefinition/UpdateGatewayModelDefinition: requires USE on secrets
+    This mirrors the basic auth plugin's USE permission level via the 'use' subresource. Broad
+    namespace-level USE access short-circuits the checks. Otherwise, when the request names a
+    specific dependency, the plugin retries with the dependency's MLflow resource name so
+    fine-grained resourceNames can authorize the request.
 
     The 'use' subresource allows fine-grained RBAC control: users can have 'get' permission
     to read a resource without having 'create' on '<resource>/use' to reference it.
@@ -349,25 +362,57 @@ def _enforce_gateway_dependency_permissions(
 
     # Gateway endpoints require USE permission on model definitions.
     if rule.resource == RESOURCE_GATEWAY_ENDPOINTS and rule.verb in ("create", "update"):
-        if not authorizer.is_allowed(
+        if authorizer.is_allowed(
             identity, RESOURCE_GATEWAY_MODEL_DEFINITIONS, "create", workspace_name, "use"
         ):
-            raise MlflowException(
-                "Permission denied: creating or updating a gateway endpoint requires "
-                "'use' permission on gateway model definitions.",
-                error_code=databricks_pb2.PERMISSION_DENIED,
+            return
+        try:
+            dependency_names = resolve_gateway_model_definition_names_for_use(request_context)
+        except ResourceNameResolutionError:
+            dependency_names = ()
+        if dependency_names and all(
+            authorizer.is_allowed(
+                identity,
+                RESOURCE_GATEWAY_MODEL_DEFINITIONS,
+                "create",
+                workspace_name,
+                "use",
+                resource_name=dependency_name,
             )
+            for dependency_name in dependency_names
+        ):
+            return
+        raise MlflowException(
+            "Permission denied: creating or updating a gateway endpoint requires "
+            "'use' permission on gateway model definitions.",
+            error_code=databricks_pb2.PERMISSION_DENIED,
+        )
 
     # Gateway model definitions require USE permission on secrets.
     if rule.resource == RESOURCE_GATEWAY_MODEL_DEFINITIONS and rule.verb in ("create", "update"):
-        if not authorizer.is_allowed(
-            identity, RESOURCE_GATEWAY_SECRETS, "create", workspace_name, "use"
-        ):
-            raise MlflowException(
-                "Permission denied: creating or updating a gateway model definition requires "
-                "'use' permission on gateway secrets.",
-                error_code=databricks_pb2.PERMISSION_DENIED,
+        if authorizer.is_allowed(identity, RESOURCE_GATEWAY_SECRETS, "create", workspace_name, "use"):
+            return
+        try:
+            dependency_names = resolve_gateway_secret_names_for_use(request_context)
+        except ResourceNameResolutionError:
+            dependency_names = ()
+        if dependency_names and all(
+            authorizer.is_allowed(
+                identity,
+                RESOURCE_GATEWAY_SECRETS,
+                "create",
+                workspace_name,
+                "use",
+                resource_name=dependency_name,
             )
+            for dependency_name in dependency_names
+        ):
+            return
+        raise MlflowException(
+            "Permission denied: creating or updating a gateway model definition requires "
+            "'use' permission on gateway secrets.",
+            error_code=databricks_pb2.PERMISSION_DENIED,
+        )
 
 
 async def _ensure_request_context_json_body(
@@ -472,7 +517,7 @@ async def _authorize_request_async(
         if workspace_name:
             updated_request_context = replace(updated_request_context, workspace=workspace_name)
 
-    # Check authorization for each rule - user must have permission for each resource type
+    response_filter_required = False
     for rule in rules:
         if rule.deny:
             raise MlflowException(
@@ -501,6 +546,54 @@ async def _authorize_request_async(
                 workspace_name,
                 rule.subresource,
             )
+            # Fallback to resourceName when the user doesn't have the broad permissions.
+            # This approach allows us to reuse cache SelfSubjectAccessReview of the common case
+            # where a user has access to all resources to the workspace.
+            if not allowed and rule.resource_name_parsers:
+                updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+                try:
+                    resource_names = resolve_resource_names(
+                        updated_request_context, rule.resource_name_parsers
+                    )
+                except ResourceNameResolutionError:
+                    resource_names = ()
+                allowed = bool(resource_names) and all(
+                    authorizer.is_allowed(
+                        identity,
+                        rule.resource,
+                        rule.verb,
+                        workspace_name,
+                        rule.subresource,
+                        resource_name=resource_name,
+                    )
+                    for resource_name in resource_names
+                )
+            if not allowed and rule.collection_policy:
+                updated_request_context, request_filter_applied = apply_request_collection_filter(
+                    updated_request_context,
+                    rule.collection_policy,
+                    authorizer=authorizer,
+                    identity=identity,
+                    workspace_name=workspace_name,
+                )
+                if not request_filter_applied:
+                    updated_request_context = await _ensure_request_context_json_body(
+                        updated_request_context
+                    )
+                    updated_request_context, request_filter_applied = apply_request_collection_filter(
+                        updated_request_context,
+                        rule.collection_policy,
+                        authorizer=authorizer,
+                        identity=identity,
+                        workspace_name=workspace_name,
+                    )
+                if request_filter_applied:
+                    allowed = True
+                elif is_response_filter_policy(rule.collection_policy) or is_graphql_collection_policy(
+                    rule.collection_policy
+                ):
+                    response_filter_required = True
+                    allowed = True
             if not allowed:
                 raise MlflowException(
                     "Permission denied for requested operation.",
@@ -538,6 +631,7 @@ async def _authorize_request_async(
         rules=rules,
         request_context=updated_request_context,
         username=username,
+        response_filter_required=response_filter_required,
     )
 
 
