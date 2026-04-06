@@ -245,7 +245,11 @@ def _find_authorization_rules(
                 core_mod._logger.error("Could not determine GraphQL authorization: no query provided.")
                 return None
 
-            query_info = _extract_graphql_query_info(query_string)
+            variables = payload.get("variables")
+            query_info = _extract_graphql_query_info(
+                query_string,
+                variables if isinstance(variables, dict) else None,
+            )
             if not query_info.root_fields and not query_info.has_nested_model_registry_access:
                 core_mod._logger.error(
                     "Could not determine GraphQL authorization: query could not be "
