@@ -8,12 +8,11 @@ import logging
 import os
 import re
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 
 import werkzeug
-from flask import has_request_context, request
 from mlflow.exceptions import MlflowException
 from mlflow.protos import databricks_pb2
 from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR
@@ -43,6 +42,7 @@ from mlflow_kubernetes_plugins.auth.constants import (
 )
 from mlflow_kubernetes_plugins.auth.request_context import (
     AuthorizationRequest,
+    _build_graphql_payload,
 )
 from mlflow_kubernetes_plugins.auth.rules import (
     AuthorizationRule,
@@ -252,6 +252,7 @@ def _parse_jwt_subject(token: str, claim: str) -> str | None:
 class _AuthorizationResult:
     identity: _RequestIdentity
     rules: list[AuthorizationRule]
+    request_context: AuthorizationRequest
     username: str | None
 
     @property
@@ -297,35 +298,30 @@ def _parse_remote_groups(
     return tuple(token.strip() for token in tokens if token and token.strip())
 
 
-def _extract_workspace_scope_from_request(rule: AuthorizationRule) -> str | None:
+def _extract_workspace_scope_from_request(
+    request_context: AuthorizationRequest, rule: AuthorizationRule
+) -> str | None:
     """
-    Attempt to recover the workspace name from the active Flask request.
+    Attempt to recover the workspace name from the request context.
 
     Workspace CRUD endpoints encode the target workspace name in either the route parameters
     (e.g., ``/workspaces/<workspace_name>``) or, for creation, within the JSON payload. These
     endpoints do not require the workspace context header, so we fall back to parsing the request
     when the context is absent.
     """
-
-    if not has_request_context():
-        return None
-
-    view_args = getattr(request, "view_args", None)
-    if isinstance(view_args, dict):
-        if isinstance(candidate := view_args.get("workspace_name"), str) and (
-            candidate := candidate.strip()
-        ):
-            return candidate
+    path_params = request_context.path_params
+    if isinstance(path_params.get("workspace_name"), str) and (
+        candidate := path_params["workspace_name"].strip()
+    ):
+        return candidate
 
     if not rule.workspace_access_check:
         return None
 
-    if (request.method or "").upper() == "POST":
-        payload = request.get_json(silent=True)
+    if (request_context.method or "").upper() == "POST":
+        payload = request_context.json_body
         if isinstance(payload, dict):
-            if isinstance(candidate := payload.get("name"), str) and (
-                candidate := candidate.strip()
-            ):
+            if isinstance(candidate := payload.get("name"), str) and (candidate := candidate.strip()):
                 return candidate
 
     return None
@@ -334,6 +330,7 @@ def _extract_workspace_scope_from_request(rule: AuthorizationRule) -> str | None
 def _enforce_gateway_dependency_permissions(
     authorizer: "KubernetesAuthorizer",
     identity: _RequestIdentity,
+    request_context: AuthorizationRequest,
     workspace_name: str | None,
     rule: AuthorizationRule,
 ) -> None:
@@ -350,8 +347,7 @@ def _enforce_gateway_dependency_permissions(
     if not workspace_name:
         return
 
-    # Gateway endpoints require USE permission on model definitions
-    # Checked via 'create' verb on 'gatewaymodeldefinitions/use' subresource
+    # Gateway endpoints require USE permission on model definitions.
     if rule.resource == RESOURCE_GATEWAY_ENDPOINTS and rule.verb in ("create", "update"):
         if not authorizer.is_allowed(
             identity, RESOURCE_GATEWAY_MODEL_DEFINITIONS, "create", workspace_name, "use"
@@ -362,8 +358,7 @@ def _enforce_gateway_dependency_permissions(
                 error_code=databricks_pb2.PERMISSION_DENIED,
             )
 
-    # Gateway model definitions require USE permission on secrets
-    # Checked via 'create' verb on 'gatewaysecrets/use' subresource
+    # Gateway model definitions require USE permission on secrets.
     if rule.resource == RESOURCE_GATEWAY_MODEL_DEFINITIONS and rule.verb in ("create", "update"):
         if not authorizer.is_allowed(
             identity, RESOURCE_GATEWAY_SECRETS, "create", workspace_name, "use"
@@ -375,7 +370,32 @@ def _enforce_gateway_dependency_permissions(
             )
 
 
-def _authorize_request(
+async def _ensure_request_context_json_body(
+    request_context: AuthorizationRequest,
+) -> AuthorizationRequest:
+    """Return an ``AuthorizationRequest`` that has its JSON body loaded.
+
+    If the body is already present (or no loader callback is available), the
+    original *request_context* is returned unchanged.  Otherwise the callback
+    is invoked to fetch the raw body and a new ``AuthorizationRequest`` is
+    constructed with the loaded ``json_body`` and derived ``graphql_payload``.
+    """
+    if request_context.json_body is not None or request_context.ensure_json_body is None:
+        return request_context
+    loaded_body = await request_context.ensure_json_body()
+    return replace(
+        request_context,
+        json_body=loaded_body,
+        graphql_payload=_build_graphql_payload(
+            request_context.path,
+            json_body=loaded_body,
+            query_params=request_context.query_params,
+        ),
+        ensure_json_body=None,
+    )
+
+
+async def _authorize_request_async(
     request_context: AuthorizationRequest,
     *,
     authorizer: KubernetesAuthorizer,
@@ -427,10 +447,14 @@ def _authorize_request(
 
     from mlflow_kubernetes_plugins.auth.compiler import _find_authorization_rules
 
+    updated_request_context = request_context
+    if request_context.path.endswith("/graphql") and request_context.graphql_payload is None:
+        updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+
     rules = _find_authorization_rules(
-        request_context.path,
-        request_context.method,
-        graphql_payload=request_context.graphql_payload,
+        updated_request_context.path,
+        updated_request_context.method,
+        graphql_payload=updated_request_context.graphql_payload,
     )
     if rules is None or len(rules) == 0:
         _logger.warning(
@@ -443,9 +467,10 @@ def _authorize_request(
             error_code=databricks_pb2.ENDPOINT_NOT_FOUND,
         )
 
-    # Extract workspace from request if not provided via header
     if not workspace_name:
-        workspace_name = _extract_workspace_scope_from_request(rules[0])
+        workspace_name = _extract_workspace_scope_from_request(updated_request_context, rules[0])
+        if workspace_name:
+            updated_request_context = replace(updated_request_context, workspace=workspace_name)
 
     # Check authorization for each rule - user must have permission for each resource type
     for rule in rules:
@@ -481,7 +506,9 @@ def _authorize_request(
                     "Permission denied for requested operation.",
                     error_code=databricks_pb2.PERMISSION_DENIED,
                 )
-            _enforce_gateway_dependency_permissions(authorizer, identity, workspace_name, rule)
+            _enforce_gateway_dependency_permissions(
+                authorizer, identity, updated_request_context, workspace_name, rule
+            )
         elif rule.workspace_access_check and not rule.apply_workspace_filter:
             # Workspace access check without RBAC verb
             if not workspace_name:
@@ -503,7 +530,15 @@ def _authorize_request(
                 error_code=databricks_pb2.INTERNAL_ERROR,
             )
 
-    return _AuthorizationResult(identity=identity, rules=rules, username=username)
+    if any(rule.override_run_user for rule in rules):
+        updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+
+    return _AuthorizationResult(
+        identity=identity,
+        rules=rules,
+        request_context=updated_request_context,
+        username=username,
+    )
 
 
 __all__ = [
@@ -514,8 +549,9 @@ __all__ = [
     "_AUTHORIZATION_HANDLED",
     "_AuthorizationResult",
     "_RequestIdentity",
-    "_authorize_request",
+    "_authorize_request_async",
     "_canonicalize_path",
+    "_ensure_request_context_json_body",
     "_enforce_gateway_dependency_permissions",
     "_extract_workspace_scope_from_request",
     "_fastapi_path_to_template",

@@ -17,6 +17,8 @@ from mlflow_kubernetes_plugins.auth.graphql import (
 )
 from mlflow_kubernetes_plugins.auth.rules import GRAPHQL_OPERATION_RULES, AuthorizationRule
 
+from conftest import _authorize_request
+
 
 @pytest.fixture(autouse=True)
 def _compile_rules(compile_auth_rules):
