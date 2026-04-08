@@ -166,6 +166,21 @@ def test_get_workspace_reads_namespace(core_api):
     assert workspace.default_artifact_root is None
 
 
+def test_get_workspace_missing_namespace_uses_ui_compatible_prefix(core_api):
+    core_api.list_namespace.return_value = SimpleNamespace(
+        items=[_namespace("analytics", "Analytics Workspace")],
+        metadata=SimpleNamespace(resource_version="10"),
+    )
+
+    provider = KubernetesWorkspaceProvider()
+
+    with pytest.raises(MlflowException, match=r"^Workspace 'missing-team' not found\b") as exc:
+        provider.get_workspace("missing-team")
+
+    assert exc.value.error_code == "RESOURCE_DOES_NOT_EXIST"
+    assert "Each MLflow workspace maps 1:1 to a namespace." in exc.value.message
+
+
 def test_get_default_workspace_env(core_api, monkeypatch):
     monkeypatch.setenv("MLFLOW_K8S_DEFAULT_WORKSPACE", "shared")
     core_api.list_namespace.return_value = SimpleNamespace(

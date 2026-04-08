@@ -149,7 +149,7 @@ class KubernetesWorkspaceProvider(AbstractStore):
         info = self._namespace_cache.get_namespace(workspace_name)
         if info is None:
             parts = [
-                f"Workspace '{workspace_name}' was not found in the Kubernetes cluster.",
+                f"Workspace '{workspace_name}' not found in the Kubernetes cluster.",
                 "Each MLflow workspace maps 1:1 to a namespace.",
             ]
             if self._config.label_selector:
