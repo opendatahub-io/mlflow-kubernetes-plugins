@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from flask import Flask
 from flask import request as flask_request
 from mlflow.exceptions import MlflowException
+from mlflow.protos import databricks_pb2
 from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
 from mlflow.utils import workspace_context
 from mlflow.utils.workspace_utils import WORKSPACE_HEADER_NAME
@@ -1133,7 +1134,10 @@ def test_job_api_missing_workspace_context_returns_error(
         },
     )
 
-    assert response.status_code == 500
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == databricks_pb2.ErrorCode.Name(
+        databricks_pb2.INVALID_PARAMETER_VALUE
+    )
     assert "Workspace context" in response.json()["error"]["message"]
 
 

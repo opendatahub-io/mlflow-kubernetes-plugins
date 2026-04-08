@@ -35,7 +35,6 @@ from mlflow_kubernetes_plugins.auth.compiler import (
     _extract_path_params,
     _validate_fastapi_route_authorization,
 )
-from mlflow_kubernetes_plugins.auth.constants import WORKSPACE_REQUIRED_ERROR_MESSAGE
 from mlflow_kubernetes_plugins.auth.core import (
     _AUTHORIZATION_HANDLED,
     _authorize_request_async,
@@ -358,16 +357,6 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
             except MlflowException as exc:
                 if workspace_set:
                     workspace_context.clear_server_request_workspace()
-                if (
-                    workspace_name is None
-                    and exc.error_code
-                    == databricks_pb2.ErrorCode.Name(databricks_pb2.INVALID_PARAMETER_VALUE)
-                    and exc.message == WORKSPACE_REQUIRED_ERROR_MESSAGE
-                ):
-                    exc = MlflowException(
-                        WORKSPACE_REQUIRED_ERROR_MESSAGE,
-                        error_code=databricks_pb2.INTERNAL_ERROR,
-                    )
                 return JSONResponse(
                     status_code=exc.get_http_status_code(),
                     content={"error": {"code": exc.error_code, "message": exc.message}},
