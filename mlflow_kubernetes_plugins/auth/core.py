@@ -119,6 +119,7 @@ _STATIC_PREFIX_APPLICABLE_PREFIXES: tuple[str, ...] = (
     "/metrics",
     "/version",
     "/server-info",
+    "/api",
     "/ajax-api",
     "/get-artifact",
     "/model-versions/get-artifact",
