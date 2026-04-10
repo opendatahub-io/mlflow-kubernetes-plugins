@@ -256,7 +256,7 @@ def test_canonicalize_path_static_prefix_applies_to_static_routes_only(monkeypat
     version_path = "/mlflow/version"
 
     assert _canonicalize_path(raw_path=ajax_path) == "/ajax-api/2.0/mlflow/runs/create"
-    assert _canonicalize_path(raw_path=api_path) == api_path
+    assert _canonicalize_path(raw_path=api_path) == "/api/2.0/mlflow/runs/create"
     assert _canonicalize_path(raw_path=health_path) == "/health"
     assert _canonicalize_path(raw_path=metrics_path) == "/metrics"
     assert _canonicalize_path(raw_path=version_path) == "/version"
