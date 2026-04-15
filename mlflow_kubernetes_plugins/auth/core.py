@@ -29,6 +29,7 @@ from mlflow_kubernetes_plugins.auth.collection_filters import (
 )
 from mlflow_kubernetes_plugins.auth.constants import (
     DEFAULT_REMOTE_GROUPS_SEPARATOR,
+    RESOURCE_GATEWAY_BUDGETS,
     RESOURCE_GATEWAY_ENDPOINTS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
@@ -415,6 +416,30 @@ def _enforce_gateway_dependency_permissions(
         )
 
 
+async def _enforce_gateway_budget_scope(
+    request_context: AuthorizationRequest, rule: AuthorizationRule
+) -> AuthorizationRequest:
+    if rule.resource != RESOURCE_GATEWAY_BUDGETS or rule.verb not in {"create", "update"}:
+        return request_context
+
+    updated_request_context = await _ensure_request_context_json_body(request_context)
+    payload = updated_request_context.json_body
+    if not isinstance(payload, dict):
+        raise MlflowException(
+            "Gateway budget policy requests must use a JSON object body.",
+            error_code=databricks_pb2.INVALID_PARAMETER_VALUE,
+        )
+
+    for raw_target_scope in (payload.get("target_scope"), payload.get("targetScope")):
+        if isinstance(raw_target_scope, str) and raw_target_scope.strip().upper() == "GLOBAL":
+            raise MlflowException(
+                "Gateway budget policies must remain workspace-scoped. "
+                "GLOBAL target_scope is not supported by the Kubernetes auth plugin.",
+                error_code=databricks_pb2.INVALID_PARAMETER_VALUE,
+            )
+    return updated_request_context
+
+
 async def _ensure_request_context_json_body(
     request_context: AuthorizationRequest,
 ) -> AuthorizationRequest:
@@ -532,6 +557,10 @@ async def _authorize_request_async(
             )
 
         if rule.verb is not None:
+            if rule.resource == RESOURCE_GATEWAY_BUDGETS and rule.verb in {"create", "update"}:
+                updated_request_context = await _enforce_gateway_budget_scope(
+                    updated_request_context, rule
+                )
             # Standard RBAC check
             if not rule.resource:
                 raise MlflowException(
@@ -645,6 +674,7 @@ __all__ = [
     "_RequestIdentity",
     "_authorize_request_async",
     "_canonicalize_path",
+    "_enforce_gateway_budget_scope",
     "_ensure_request_context_json_body",
     "_enforce_gateway_dependency_permissions",
     "_extract_workspace_scope_from_request",

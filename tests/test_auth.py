@@ -63,6 +63,20 @@ from mlflow.protos.service_pb2 import (
 )
 from mlflow.protos.webhooks_pb2 import DeleteWebhook, GetWebhook, UpdateWebhook
 from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR
+from mlflow_kubernetes_plugins.auth._compat import (
+    BatchGetTraceInfos,
+    CreateGatewayBudgetPolicy,
+    CreateIssue,
+    DeleteGatewayBudgetPolicy,
+    GetGatewayBudgetPolicy,
+    GetIssue,
+    GetPresignedDownloadUrl,
+    ListGatewayBudgetPolicies,
+    ListGatewayBudgetWindows,
+    SearchIssues,
+    UpdateGatewayBudgetPolicy,
+    UpdateIssue,
+)
 from mlflow_kubernetes_plugins.auth.authorizer import (
     AuthorizationMode,
     KubernetesAuthConfig,
@@ -76,6 +90,7 @@ from mlflow_kubernetes_plugins.auth.collection_filters import (
     COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
     COLLECTION_POLICY_REQUEST_RUN_IDS,
     COLLECTION_POLICY_RESPONSE_EXPERIMENTS,
+    COLLECTION_POLICY_RESPONSE_TRACES,
     apply_request_collection_filter,
     apply_response_collection_filters,
 )
@@ -92,6 +107,7 @@ from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_ASSISTANTS,
     RESOURCE_DATASETS,
     RESOURCE_EXPERIMENTS,
+    RESOURCE_GATEWAY_BUDGETS,
     RESOURCE_GATEWAY_ENDPOINTS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
@@ -106,6 +122,7 @@ from mlflow_kubernetes_plugins.auth.core import (
 )
 from mlflow_kubernetes_plugins.auth.request_context import AuthorizationRequest
 from mlflow_kubernetes_plugins.auth.resource_names import (
+    RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,
     RESOURCE_NAME_PARSER_DATASET_ID_TO_NAME,
     RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,
     RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES,
@@ -113,6 +130,7 @@ from mlflow_kubernetes_plugins.auth.resource_names import (
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_NEW_REGISTERED_MODEL_NAME,
     RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME,
@@ -2010,6 +2028,31 @@ def test_resolve_resource_names_rejects_start_trace_v3_without_nested_experiment
         )
 
 
+def test_resolve_resource_names_issue_id_to_experiment_name(monkeypatch):
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_issue=lambda issue_id: SimpleNamespace(experiment_id="42"),
+            get_experiment=lambda experiment_id: SimpleNamespace(name="issue-exp"),
+        ),
+    )
+
+    request_context = AuthorizationRequest(
+        authorization_header="Bearer issue-token",
+        forwarded_access_token=None,
+        remote_user_header_value=None,
+        remote_groups_header_value=None,
+        path="/api/3.0/mlflow/issues/iss-123",
+        method="GET",
+        workspace="team-a",
+        path_params={"issue_id": "iss-123"},
+    )
+
+    assert resolve_resource_names(
+        request_context, (RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,)
+    ) == ("issue-exp",)
+
+
 def test_compile_rules_raise_for_uncovered_endpoint(monkeypatch):
     import mlflow_kubernetes_plugins.auth.compiler as auth_mod
 
@@ -2110,6 +2153,263 @@ def test_misc_path_authorization_rules_cover_recent_endpoints():
         ].resource
         == RESOURCE_GATEWAY_MODEL_DEFINITIONS
     )
+
+
+def test_mlflow_311_request_authorization_rules_cover_new_endpoints():
+    if (
+        CreateIssue is None
+        or BatchGetTraceInfos is None
+        or CreateGatewayBudgetPolicy is None
+        or GetPresignedDownloadUrl is None
+    ):
+        pytest.skip("Installed MLflow version does not expose the 3.11 request classes.")
+
+    assert REQUEST_AUTHORIZATION_RULES[BatchGetTraceInfos].collection_policy == COLLECTION_POLICY_RESPONSE_TRACES
+    assert REQUEST_AUTHORIZATION_RULES[CreateIssue].resource_name_parsers == (
+        RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,
+    )
+    assert REQUEST_AUTHORIZATION_RULES[GetIssue].resource_name_parsers == (
+        RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,
+    )
+    assert REQUEST_AUTHORIZATION_RULES[UpdateIssue].resource_name_parsers == (
+        RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,
+    )
+    assert REQUEST_AUTHORIZATION_RULES[SearchIssues].collection_policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID
+    assert REQUEST_AUTHORIZATION_RULES[GetPresignedDownloadUrl].resource_name_parsers == (
+        RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,
+    )
+
+    gateway_rules = {
+        CreateGatewayBudgetPolicy: ("create", RESOURCE_GATEWAY_BUDGETS),
+        GetGatewayBudgetPolicy: ("get", RESOURCE_GATEWAY_BUDGETS),
+        UpdateGatewayBudgetPolicy: ("update", RESOURCE_GATEWAY_BUDGETS),
+        DeleteGatewayBudgetPolicy: ("delete", RESOURCE_GATEWAY_BUDGETS),
+        ListGatewayBudgetPolicies: ("list", RESOURCE_GATEWAY_BUDGETS),
+        ListGatewayBudgetWindows: ("list", RESOURCE_GATEWAY_BUDGETS),
+    }
+    for request_class, expected in gateway_rules.items():
+        rule = REQUEST_AUTHORIZATION_RULES[request_class]
+        assert (rule.verb, rule.resource) == expected
+        assert rule.resource_name_parsers == ()
+
+
+def test_mlflow_prefixed_custom_path_authorization_rules_are_registered():
+    get_job_rule = PATH_AUTHORIZATION_RULES[("/ajax-api/3.0/mlflow/jobs/<job_id>", "GET")]
+    cancel_job_rule = PATH_AUTHORIZATION_RULES[("/ajax-api/3.0/mlflow/jobs/cancel/<job_id>", "PATCH")]
+    invoke_issue_rule = PATH_AUTHORIZATION_RULES[("/ajax-api/3.0/mlflow/issues/invoke", "POST")]
+
+    assert (get_job_rule.verb, get_job_rule.resource, get_job_rule.resource_name_parsers) == (
+        "get",
+        RESOURCE_EXPERIMENTS,
+        (),
+    )
+    assert (
+        cancel_job_rule.verb,
+        cancel_job_rule.resource,
+        cancel_job_rule.resource_name_parsers,
+    ) == (
+        "update",
+        RESOURCE_EXPERIMENTS,
+        (),
+    )
+    assert (
+        invoke_issue_rule.verb,
+        invoke_issue_rule.resource,
+        invoke_issue_rule.resource_name_parsers,
+    ) == (
+        "update",
+        RESOURCE_EXPERIMENTS,
+        (RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    )
+
+
+def test_authorize_request_rejects_global_budget_scope_on_create(monkeypatch):
+    authorizer = Mock()
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [AuthorizationRule("create", resource=RESOURCE_GATEWAY_BUDGETS)],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    with pytest.raises(MlflowException, match="workspace-scoped") as exc:
+        _authorize_request(
+            AuthorizationRequest(
+                authorization_header="Bearer budget-token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/3.0/mlflow/gateway/budgets/create",
+                method="POST",
+                workspace="team-a",
+                json_body={"target_scope": "GLOBAL"},
+            ),
+            authorizer=authorizer,
+            config_values=KubernetesAuthConfig(),
+        )
+
+    assert exc.value.error_code == databricks_pb2.ErrorCode.Name(
+        databricks_pb2.INVALID_PARAMETER_VALUE
+    )
+    authorizer.is_allowed.assert_not_called()
+
+
+def test_authorize_request_allows_workspace_budget_scope_on_create(monkeypatch):
+    authorizer = Mock()
+    authorizer.is_allowed.return_value = True
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [AuthorizationRule("create", resource=RESOURCE_GATEWAY_BUDGETS)],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    result = _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer budget-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/gateway/budgets/create",
+            method="POST",
+            workspace="team-a",
+            json_body={"target_scope": "WORKSPACE", "targetScope": "WORKSPACE"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    assert result.request_context.workspace == "team-a"
+    authorizer.is_allowed.assert_called_once()
+
+
+def test_authorize_request_allows_budget_create_without_target_scope(monkeypatch):
+    authorizer = Mock()
+    authorizer.is_allowed.return_value = True
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [AuthorizationRule("create", resource=RESOURCE_GATEWAY_BUDGETS)],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    result = _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer budget-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/gateway/budgets/create",
+            method="POST",
+            workspace="team-a",
+            json_body={"budget_amount": 100.0},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    assert result.request_context.workspace == "team-a"
+    authorizer.is_allowed.assert_called_once()
+
+
+def test_authorize_request_rejects_global_budget_scope_on_update(monkeypatch):
+    authorizer = Mock()
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [AuthorizationRule("update", resource=RESOURCE_GATEWAY_BUDGETS)],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    with pytest.raises(MlflowException, match="workspace-scoped") as exc:
+        _authorize_request(
+            AuthorizationRequest(
+                authorization_header="Bearer budget-token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/3.0/mlflow/gateway/budgets/update",
+                method="POST",
+                workspace="team-a",
+                json_body={"targetScope": "GLOBAL"},
+            ),
+            authorizer=authorizer,
+            config_values=KubernetesAuthConfig(),
+        )
+
+    assert exc.value.error_code == databricks_pb2.ErrorCode.Name(
+        databricks_pb2.INVALID_PARAMETER_VALUE
+    )
+    authorizer.is_allowed.assert_not_called()
+
+
+def test_authorize_request_rejects_global_budget_scope_when_duplicate_keys_conflict(monkeypatch):
+    authorizer = Mock()
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [AuthorizationRule("create", resource=RESOURCE_GATEWAY_BUDGETS)],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    with pytest.raises(MlflowException, match="workspace-scoped"):
+        _authorize_request(
+            AuthorizationRequest(
+                authorization_header="Bearer budget-token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/3.0/mlflow/gateway/budgets/create",
+                method="POST",
+                workspace="team-a",
+                json_body={"target_scope": "WORKSPACE", "targetScope": "GLOBAL"},
+            ),
+            authorizer=authorizer,
+            config_values=KubernetesAuthConfig(),
+        )
+
+
+def test_authorize_request_rejects_non_mapping_budget_body(monkeypatch):
+    authorizer = Mock()
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [AuthorizationRule("create", resource=RESOURCE_GATEWAY_BUDGETS)],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    with pytest.raises(MlflowException, match="JSON object body") as exc:
+        _authorize_request(
+            AuthorizationRequest(
+                authorization_header="Bearer budget-token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/3.0/mlflow/gateway/budgets/create",
+                method="POST",
+                workspace="team-a",
+                json_body=["not-a-dict"],
+            ),
+            authorizer=authorizer,
+            config_values=KubernetesAuthConfig(),
+        )
+
+    assert exc.value.error_code == databricks_pb2.ErrorCode.Name(
+        databricks_pb2.INVALID_PARAMETER_VALUE
+    )
+    authorizer.is_allowed.assert_not_called()
 
 
 def test_metric_history_bulk_rules_use_run_id_request_filter():
@@ -2603,7 +2903,7 @@ def test_can_access_workspace_iterates_priority_resources(monkeypatch):
     assert authorizer.can_access_workspace(identity, "team-b", verb="get") is False
 
     calls = authorizer.is_allowed.call_args_list
-    assert len(calls) == 6
+    assert len(calls) == 7
     assert [c[0][1] for c in calls] == [
         RESOURCE_EXPERIMENTS,
         RESOURCE_DATASETS,
@@ -2611,6 +2911,7 @@ def test_can_access_workspace_iterates_priority_resources(monkeypatch):
         RESOURCE_GATEWAY_SECRETS,
         RESOURCE_GATEWAY_ENDPOINTS,
         RESOURCE_GATEWAY_MODEL_DEFINITIONS,
+        RESOURCE_GATEWAY_BUDGETS,
     ]
 
 
@@ -2712,18 +3013,18 @@ def test_jobs_search_effective_compiled_rule_uses_experiment_filter():
         assert rules[0].collection_policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID
 
 
-def test_generic_job_routes_do_not_attach_experiment_name_parsers():
-    routes = [
-        ("/ajax-api/3.0/jobs", "POST"),
-        ("/ajax-api/3.0/jobs/123", "GET"),
-        ("/ajax-api/3.0/jobs/cancel/123", "PATCH"),
-        ("/ajax-api/3.0/jobs/search", "POST"),
-    ]
-    for path, method in routes:
+def test_generic_job_routes_do_not_attach_resource_name_parsers():
+    routes = {
+        ("/ajax-api/3.0/jobs", "POST"): (),
+        ("/ajax-api/3.0/jobs/123", "GET"): (),
+        ("/ajax-api/3.0/jobs/cancel/123", "PATCH"): (),
+        ("/ajax-api/3.0/jobs/search", "POST"): (),
+    }
+    for (path, method), expected_parsers in routes.items():
         rules = _find_authorization_rules(path, method)
         assert rules is not None, f"No rule found for {method} {path}"
         assert len(rules) == 1
-        assert rules[0].resource_name_parsers == ()
+        assert rules[0].resource_name_parsers == expected_parsers
 
 
 def test_prompt_optimization_jobs_use_experiments_resource():
