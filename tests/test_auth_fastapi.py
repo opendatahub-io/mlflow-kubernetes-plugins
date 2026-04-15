@@ -1191,6 +1191,43 @@ def test_create_app_wraps_flask_with_fastapi(monkeypatch):
     validate_graphql.assert_called_once_with()
 
 
+def test_create_app_validates_current_mlflow_startup_rules(monkeypatch):
+    from mlflow.server import app as real_mlflow_app
+    from mlflow.server.handlers import get_endpoints as real_get_endpoints
+    from mlflow_kubernetes_plugins.auth.compiler import _reset_compiled_rules
+    from mlflow_kubernetes_plugins.auth.middleware import create_app
+
+    config_values = Mock(spec=KubernetesAuthConfig)
+    authorizer = Mock(spec=KubernetesAuthorizer)
+    original_iter_rules = real_mlflow_app.url_map.iter_rules
+
+    monkeypatch.delenv("K8S_AUTH_TEST_SKIP_COMPILE", raising=False)
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.compiler.get_endpoints", real_get_endpoints)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler.mlflow_app.url_map.iter_rules",
+        lambda: original_iter_rules(),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware.KubernetesAuthConfig.from_env",
+        lambda: config_values,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware.KubernetesAuthorizer",
+        lambda config_values: authorizer,
+    )
+    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware.atexit.register", lambda fn: None)
+
+    _reset_compiled_rules()
+
+    # `test_compile_rules_raise_for_uncovered_endpoint` covers the negative compiler path.
+    # This test is the positive integration check that live MLflow startup coverage still passes.
+    try:
+        result = create_app(Flask(__name__))
+        assert result is not None
+    finally:
+        _reset_compiled_rules()
+
+
 # Example usage documentation
 """
 Example: Using OTEL endpoints with Kubernetes authorization

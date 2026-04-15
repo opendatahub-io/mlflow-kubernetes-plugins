@@ -88,6 +88,7 @@ curl \
 - GraphQL and FastAPI routes are covered in addition to the classic Flask endpoints
 - GraphQL collection fields use server-side filtering, while single-object GraphQL reads keep explicit request-time authorization
 - gateway resource access uses `use` subresources for fine-grained RBAC checks
+- gateway budget policies use the dedicated `gatewaybudgets` resource, remain workspace-scoped rather than `resourceName`-scoped, and reject `GLOBAL` target scope
 - startup validation fails if a new protected GraphQL field is added without explicit authorization policy coverage
 
 For the Kubernetes permissions required by the server and callers, see [`kubernetes-rbac.md`](kubernetes-rbac.md).

@@ -29,6 +29,7 @@ RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME = "registered_model_name"
 RESOURCE_NAME_PARSER_NEW_REGISTERED_MODEL_NAME = "new_registered_model_name"
 RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME = "webhook_id_to_registered_model_name"
 RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME = "job_id_to_experiment_name"
+RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME = "issue_id_to_experiment_name"
 RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME = "trace_request_id_to_experiment_name"
 RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME = "trace_id_to_experiment_name"
 RESOURCE_NAME_PARSER_TRACE_V3_EXPERIMENT_ID_TO_NAME = "trace_v3_experiment_id_to_name"
@@ -309,6 +310,23 @@ def _resolve_experiment_name_from_job_id(job_id: str) -> str:
     return _resolve_experiment_name_from_experiment_id(experiment_id)
 
 
+def _resolve_experiment_name_from_issue_id(issue_id: str) -> str:
+    store = _get_tracking_store()
+    getter = getattr(store, "get_issue", None)
+    if getter is None:
+        raise ResourceNameResolutionError("Issue lookup is unavailable in this MLflow version.")
+    try:
+        issue = getter(issue_id)
+    except MlflowException as exc:
+        raise ResourceNameResolutionError(f"Could not resolve issue_id '{issue_id}'.") from exc
+    experiment_id = _normalize_string(getattr(issue, "experiment_id", None))
+    if experiment_id is None:
+        raise ResourceNameResolutionError(
+            f"Could not resolve experiment_id for issue_id '{issue_id}'."
+        )
+    return _resolve_experiment_name_from_experiment_id(experiment_id)
+
+
 def _resolve_experiment_name_from_trace_id(trace_id: str) -> str:
     try:
         trace = _get_tracking_store().get_trace_info(trace_id)
@@ -457,6 +475,10 @@ def _parse_webhook_id_to_registered_model_name(
 
 def _parse_job_id_to_experiment_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
     return (_resolve_experiment_name_from_job_id(_get_request_param(request_context, "job_id")),)
+
+
+def _parse_issue_id_to_experiment_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
+    return (_resolve_experiment_name_from_issue_id(_get_request_param(request_context, "issue_id")),)
 
 
 def _parse_trace_request_id_to_experiment_name(
@@ -725,6 +747,7 @@ RESOURCE_NAME_PARSERS: dict[str, "Callable[[AuthorizationRequest], tuple[str, ..
         _parse_webhook_id_to_registered_model_name
     ),
     RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME: _parse_job_id_to_experiment_name,
+    RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME: _parse_issue_id_to_experiment_name,
     RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME: (
         _parse_trace_request_id_to_experiment_name
     ),
@@ -822,6 +845,7 @@ __all__ = [
     "RESOURCE_NAME_PARSER_GRAPHQL_EXPERIMENT_ID_TO_NAME",
     "RESOURCE_NAME_PARSER_GRAPHQL_RUN_IDS_TO_EXPERIMENT_NAMES",
     "RESOURCE_NAME_PARSER_GRAPHQL_RUN_ID_TO_EXPERIMENT_NAME",
+    "RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME",
     "RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME",
     "RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME",
     "RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME",

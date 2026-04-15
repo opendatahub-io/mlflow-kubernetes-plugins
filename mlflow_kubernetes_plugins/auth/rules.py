@@ -153,6 +153,21 @@ from mlflow.protos.webhooks_pb2 import (
 )
 from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
 
+from mlflow_kubernetes_plugins.auth._compat import (
+    HAS_MLFLOW_3_11_AUTH_SURFACE,
+    BatchGetTraceInfos,
+    CreateGatewayBudgetPolicy,
+    CreateIssue,
+    DeleteGatewayBudgetPolicy,
+    GetGatewayBudgetPolicy,
+    GetIssue,
+    GetPresignedDownloadUrl,
+    ListGatewayBudgetPolicies,
+    ListGatewayBudgetWindows,
+    SearchIssues,
+    UpdateGatewayBudgetPolicy,
+    UpdateIssue,
+)
 from mlflow_kubernetes_plugins.auth.collection_filters import (
     COLLECTION_POLICY_BROAD_ONLY,
     COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
@@ -170,6 +185,7 @@ from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_ASSISTANTS,
     RESOURCE_DATASETS,
     RESOURCE_EXPERIMENTS,
+    RESOURCE_GATEWAY_BUDGETS,
     RESOURCE_GATEWAY_ENDPOINTS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
@@ -186,6 +202,7 @@ from mlflow_kubernetes_plugins.auth.resource_names import (
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_MODEL_ID_TO_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME,
@@ -235,6 +252,10 @@ def _gateway_secrets_rule(verb: str | None, **kwargs) -> AuthorizationRule:
 
 def _gateway_endpoints_rule(verb: str | None, **kwargs) -> AuthorizationRule:
     return AuthorizationRule(verb, resource=RESOURCE_GATEWAY_ENDPOINTS, **kwargs)
+
+
+def _gateway_budgets_rule(verb: str | None, **kwargs) -> AuthorizationRule:
+    return AuthorizationRule(verb, resource=RESOURCE_GATEWAY_BUDGETS, **kwargs)
 
 
 def _gateway_endpoints_use_rule(**kwargs) -> AuthorizationRule:
@@ -837,6 +858,52 @@ REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[AuthorizationR
     DeleteWorkspace: _workspaces_rule("delete", deny=True, requires_workspace=False),
 }
 
+if HAS_MLFLOW_3_11_AUTH_SURFACE:
+    REQUEST_AUTHORIZATION_RULES.update(
+        {
+            BatchGetTraceInfos: _experiments_rule(
+                "list",
+                collection_policy=COLLECTION_POLICY_RESPONSE_TRACES,
+            ),
+            GetPresignedDownloadUrl: _experiments_rule(
+                "get",
+                resource_name_parsers=(RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,),
+            ),
+            CreateIssue: _experiments_rule(
+                "update",
+                resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+            ),
+            GetIssue: _experiments_rule(
+                "get",
+                resource_name_parsers=(RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,),
+            ),
+            UpdateIssue: _experiments_rule(
+                "update",
+                resource_name_parsers=(RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,),
+            ),
+            SearchIssues: _experiments_rule(
+                "list",
+                collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+            ),
+            # Budget policies intentionally remain workspace-scoped in this plugin.
+            # MLflow exposes only opaque budget_policy_id values, not a declarative unique name that
+            # could be pre-provisioned through GitOps-friendly RBAC resourceNames, and the extra
+            # granularity would add little operational value for budgets.
+            CreateGatewayBudgetPolicy: _gateway_budgets_rule("create"),
+            GetGatewayBudgetPolicy: _gateway_budgets_rule("get"),
+            UpdateGatewayBudgetPolicy: _gateway_budgets_rule("update"),
+            DeleteGatewayBudgetPolicy: _gateway_budgets_rule("delete"),
+            ListGatewayBudgetPolicies: _gateway_budgets_rule(
+                "list",
+                collection_policy=COLLECTION_POLICY_BROAD_ONLY,
+            ),
+            ListGatewayBudgetWindows: _gateway_budgets_rule(
+                "list",
+                collection_policy=COLLECTION_POLICY_BROAD_ONLY,
+            ),
+        }
+    )
+
 
 PATH_AUTHORIZATION_RULES: dict[
     tuple[str, str], AuthorizationRule | tuple[AuthorizationRule, ...]
@@ -968,8 +1035,8 @@ PATH_AUTHORIZATION_RULES: dict[
         "update",
         resource_name_parsers=(RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME,),
     ),
-    # Generic Job API endpoints (FastAPI router). Keep the generic create/get/cancel routes broad,
-    # but preserve the prompt-optimization search route's experiment-scoped collection filtering.
+    # Generic Job API endpoints (FastAPI router) stay workspace-scoped. The plugin does not try to
+    # infer every resource a generic job may touch from the job metadata.
     ("/ajax-api/3.0/jobs", "POST"): _experiments_rule("update"),
     ("/ajax-api/3.0/jobs/", "POST"): _experiments_rule("update"),
     ("/ajax-api/3.0/jobs/<job_id>", "GET"): _experiments_rule("get"),
@@ -983,6 +1050,18 @@ PATH_AUTHORIZATION_RULES: dict[
     ("/ajax-api/3.0/jobs/search/", "POST"): _experiments_rule(
         "list",
         collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+    ),
+    ("/ajax-api/3.0/mlflow/jobs/<job_id>", "GET"): _experiments_rule("get"),
+    ("/ajax-api/3.0/mlflow/jobs/<job_id>/", "GET"): _experiments_rule("get"),
+    ("/ajax-api/3.0/mlflow/jobs/cancel/<job_id>", "PATCH"): _experiments_rule("update"),
+    ("/ajax-api/3.0/mlflow/jobs/cancel/<job_id>/", "PATCH"): _experiments_rule("update"),
+    ("/ajax-api/3.0/mlflow/issues/invoke", "POST"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
+    ),
+    ("/ajax-api/3.0/mlflow/issues/invoke/", "POST"): _experiments_rule(
+        "update",
+        resource_name_parsers=(RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,),
     ),
     # Assistant API endpoints (FastAPI router, currently localhost-only)
     ("/ajax-api/3.0/mlflow/assistant/message", "POST"): _assistants_rule("create"),
