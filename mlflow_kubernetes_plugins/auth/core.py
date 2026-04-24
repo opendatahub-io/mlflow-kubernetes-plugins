@@ -41,9 +41,6 @@ from mlflow_kubernetes_plugins.auth.constants import (
     UNPROTECTED_PATHS as _UNPROTECTED_PATHS,
 )
 from mlflow_kubernetes_plugins.auth.constants import (
-    WORKSPACE_MUTATION_DENIED_MESSAGE as _WORKSPACE_MUTATION_DENIED_MESSAGE,
-)
-from mlflow_kubernetes_plugins.auth.constants import (
     WORKSPACE_REQUIRED_ERROR_MESSAGE as _WORKSPACE_REQUIRED_ERROR_MESSAGE,
 )
 from mlflow_kubernetes_plugins.auth.request_context import (
@@ -52,6 +49,7 @@ from mlflow_kubernetes_plugins.auth.request_context import (
 )
 from mlflow_kubernetes_plugins.auth.resource_names import (
     ResourceNameResolutionError,
+    ResourceReferenceNotPresentError,
     resolve_gateway_model_definition_names_for_use,
     resolve_gateway_secret_names_for_use,
     resolve_resource_names,
@@ -334,7 +332,9 @@ def _extract_workspace_scope_from_request(
     if (request_context.method or "").upper() == "POST":
         payload = request_context.json_body
         if isinstance(payload, dict):
-            if isinstance(candidate := payload.get("name"), str) and (candidate := candidate.strip()):
+            if isinstance(candidate := payload.get("name"), str) and (
+                candidate := candidate.strip()
+            ):
                 return candidate
 
     return None
@@ -362,7 +362,11 @@ def _enforce_gateway_dependency_permissions(
         return
 
     # Gateway endpoints require USE permission on model definitions.
-    if rule.resource == RESOURCE_GATEWAY_ENDPOINTS and rule.verb in ("create", "update"):
+    if (
+        rule.resource == RESOURCE_GATEWAY_ENDPOINTS
+        and rule.subresource != "use"
+        and rule.verb in ("create", "update")
+    ):
         if authorizer.is_allowed(
             identity, RESOURCE_GATEWAY_MODEL_DEFINITIONS, "create", workspace_name, "use"
         ):
@@ -390,8 +394,14 @@ def _enforce_gateway_dependency_permissions(
         )
 
     # Gateway model definitions require USE permission on secrets.
-    if rule.resource == RESOURCE_GATEWAY_MODEL_DEFINITIONS and rule.verb in ("create", "update"):
-        if authorizer.is_allowed(identity, RESOURCE_GATEWAY_SECRETS, "create", workspace_name, "use"):
+    if (
+        rule.resource == RESOURCE_GATEWAY_MODEL_DEFINITIONS
+        and rule.subresource != "use"
+        and rule.verb in ("create", "update")
+    ):
+        if authorizer.is_allowed(
+            identity, RESOURCE_GATEWAY_SECRETS, "create", workspace_name, "use"
+        ):
             return
         try:
             dependency_names = resolve_gateway_secret_names_for_use(request_context)
@@ -431,7 +441,14 @@ async def _enforce_gateway_budget_scope(
         )
 
     for raw_target_scope in (payload.get("target_scope"), payload.get("targetScope")):
-        if isinstance(raw_target_scope, str) and raw_target_scope.strip().upper() == "GLOBAL":
+        normalized_target_scope = raw_target_scope
+        if isinstance(raw_target_scope, str):
+            normalized_target_scope = raw_target_scope.strip()
+            if normalized_target_scope.isdigit():
+                normalized_target_scope = int(normalized_target_scope)
+            else:
+                normalized_target_scope = normalized_target_scope.upper()
+        if normalized_target_scope in {1, "GLOBAL"}:
             raise MlflowException(
                 "Gateway budget policies must remain workspace-scoped. "
                 "GLOBAL target_scope is not supported by the Kubernetes auth plugin.",
@@ -545,8 +562,15 @@ async def _authorize_request_async(
     response_filter_required = False
     for rule in rules:
         if rule.deny:
+            deny_message = rule.deny_message
+            if deny_message is None:
+                raise MlflowException(
+                    f"Authorization rule for '{request_context.method} {request_context.path}' "
+                    "is missing a deny_message.",
+                    error_code=databricks_pb2.INTERNAL_ERROR,
+                )
             raise MlflowException(
-                _WORKSPACE_MUTATION_DENIED_MESSAGE,
+                deny_message,
                 error_code=databricks_pb2.PERMISSION_DENIED,
             )
 
@@ -579,11 +603,17 @@ async def _authorize_request_async(
             # This approach allows us to reuse cache SelfSubjectAccessReview of the common case
             # where a user has access to all resources to the workspace.
             if not allowed and rule.resource_name_parsers:
-                updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+                updated_request_context = await _ensure_request_context_json_body(
+                    updated_request_context
+                )
                 try:
                     resource_names = resolve_resource_names(
                         updated_request_context, rule.resource_name_parsers
                     )
+                except ResourceReferenceNotPresentError:
+                    if rule.allow_if_resource_reference_missing:
+                        continue
+                    resource_names = ()
                 except ResourceNameResolutionError:
                     resource_names = ()
                 allowed = bool(resource_names) and all(
@@ -609,18 +639,20 @@ async def _authorize_request_async(
                     updated_request_context = await _ensure_request_context_json_body(
                         updated_request_context
                     )
-                    updated_request_context, request_filter_applied = apply_request_collection_filter(
-                        updated_request_context,
-                        rule.collection_policy,
-                        authorizer=authorizer,
-                        identity=identity,
-                        workspace_name=workspace_name,
+                    updated_request_context, request_filter_applied = (
+                        apply_request_collection_filter(
+                            updated_request_context,
+                            rule.collection_policy,
+                            authorizer=authorizer,
+                            identity=identity,
+                            workspace_name=workspace_name,
+                        )
                     )
                 if request_filter_applied:
                     allowed = True
-                elif is_response_filter_policy(rule.collection_policy) or is_graphql_collection_policy(
+                elif is_response_filter_policy(
                     rule.collection_policy
-                ):
+                ) or is_graphql_collection_policy(rule.collection_policy):
                     response_filter_required = True
                     allowed = True
             if not allowed:
