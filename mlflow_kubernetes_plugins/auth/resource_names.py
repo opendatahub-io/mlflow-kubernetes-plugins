@@ -32,18 +32,21 @@ RESOURCE_NAME_PARSER_JOB_ID_TO_EXPERIMENT_NAME = "job_id_to_experiment_name"
 RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME = "issue_id_to_experiment_name"
 RESOURCE_NAME_PARSER_TRACE_REQUEST_ID_TO_EXPERIMENT_NAME = "trace_request_id_to_experiment_name"
 RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME = "trace_id_to_experiment_name"
+RESOURCE_NAME_PARSER_OPTIONAL_TRACE_IDS_TO_EXPERIMENT_NAMES = (
+    "optional_trace_ids_to_experiment_names"
+)
 RESOURCE_NAME_PARSER_TRACE_V3_EXPERIMENT_ID_TO_NAME = "trace_v3_experiment_id_to_name"
 RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME = "artifact_experiment_id_to_name"
 RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME = "otel_experiment_id_header_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME = "gateway_secret_id_to_name"
+RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_SECRET_ID_TO_NAME = "optional_gateway_secret_id_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME = "gateway_endpoint_id_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME = "gateway_proxy_endpoint_name"
+RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME = "optional_gateway_endpoint_name"
 RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME = "gateway_model_definition_id_to_name"
 RESOURCE_NAME_PARSER_GRAPHQL_EXPERIMENT_ID_TO_NAME = "graphql_experiment_id_to_name"
 RESOURCE_NAME_PARSER_GRAPHQL_RUN_ID_TO_EXPERIMENT_NAME = "graphql_run_id_to_experiment_name"
-RESOURCE_NAME_PARSER_GRAPHQL_RUN_IDS_TO_EXPERIMENT_NAMES = (
-    "graphql_run_ids_to_experiment_names"
-)
+RESOURCE_NAME_PARSER_GRAPHQL_RUN_IDS_TO_EXPERIMENT_NAMES = "graphql_run_ids_to_experiment_names"
 
 _EXPERIMENT_ID_PATTERN = re.compile(r"^(\d+)/")
 _GATEWAY_PROXY_ENDPOINT_PATTERN = re.compile(r"^gateway/([^/]+)/invocations$")
@@ -53,6 +56,10 @@ _LOOKUP_CACHE_MAX_ENTRIES = 4096
 
 class ResourceNameResolutionError(RuntimeError):
     """Raised when a resource name cannot be resolved safely."""
+
+
+class ResourceReferenceNotPresentError(ResourceNameResolutionError):
+    """Raised when an optional resource reference is absent from the request."""
 
 
 class _NameLookupCache:
@@ -144,7 +151,9 @@ def _get_single_value(mapping: dict[str, object], key: str) -> str | None:
 def _get_request_param(request_context: AuthorizationRequest, param: str) -> str:
     value = _get_optional_request_param(request_context, param)
     if value is None:
-        raise ResourceNameResolutionError(f"Missing required parameter '{param}' for authorization.")
+        raise ResourceNameResolutionError(
+            f"Missing required parameter '{param}' for authorization."
+        )
     return value
 
 
@@ -255,9 +264,7 @@ def _resolve_experiment_name_from_run_id(run_id: str) -> str:
         raise ResourceNameResolutionError(f"Could not resolve run_id '{run_id}'.") from exc
     experiment_id = _normalize_string(getattr(getattr(run, "info", None), "experiment_id", None))
     if experiment_id is None:
-        raise ResourceNameResolutionError(
-            f"Could not resolve experiment_id for run_id '{run_id}'."
-        )
+        raise ResourceNameResolutionError(f"Could not resolve experiment_id for run_id '{run_id}'.")
     _run_experiment_name_cache.set(run_id, experiment_id)
     return _resolve_experiment_name_from_experiment_id(experiment_id)
 
@@ -304,9 +311,7 @@ def _resolve_experiment_name_from_job_id(job_id: str) -> str:
 
     experiment_id = _normalize_string(params.get("experiment_id"))
     if experiment_id is None:
-        raise ResourceNameResolutionError(
-            f"Could not resolve experiment_id for job_id '{job_id}'."
-        )
+        raise ResourceNameResolutionError(f"Could not resolve experiment_id for job_id '{job_id}'.")
     return _resolve_experiment_name_from_experiment_id(experiment_id)
 
 
@@ -359,9 +364,13 @@ def _resolve_registered_model_name_from_webhook_id(webhook_id: str) -> str:
 
 def _resolve_gateway_secret_name_from_secret_id(secret_id: str) -> str:
     store = _get_tracking_store()
-    getter = getattr(store, "get_secret_info", None) or getattr(store, "get_gateway_secret_info", None)
+    getter = getattr(store, "get_secret_info", None) or getattr(
+        store, "get_gateway_secret_info", None
+    )
     if getter is None:
-        raise ResourceNameResolutionError("Gateway secret lookup is unavailable in this MLflow version.")
+        raise ResourceNameResolutionError(
+            "Gateway secret lookup is unavailable in this MLflow version."
+        )
     try:
         secret = getter(secret_id)
     except MlflowException as exc:
@@ -378,7 +387,9 @@ def _resolve_gateway_endpoint_name_from_endpoint_id(endpoint_id: str) -> str:
     try:
         endpoint = _get_tracking_store().get_gateway_endpoint(endpoint_id)
     except MlflowException as exc:
-        raise ResourceNameResolutionError(f"Could not resolve endpoint_id '{endpoint_id}'.") from exc
+        raise ResourceNameResolutionError(
+            f"Could not resolve endpoint_id '{endpoint_id}'."
+        ) from exc
     endpoint_name = _normalize_string(getattr(endpoint, "name", None))
     if endpoint_name is None:
         raise ResourceNameResolutionError(
@@ -404,9 +415,9 @@ def _resolve_gateway_model_definition_name_from_id(model_definition_id: str) -> 
 
 
 def _get_experiment_id_from_artifact_request(request_context: AuthorizationRequest) -> str | None:
-    artifact_path = _get_single_value(request_context.path_params, "artifact_path") or _get_single_value(
-        request_context.query_params, "path"
-    )
+    artifact_path = _get_single_value(
+        request_context.path_params, "artifact_path"
+    ) or _get_single_value(request_context.query_params, "path")
     if artifact_path is None:
         return None
     match = _EXPERIMENT_ID_PATTERN.match(artifact_path)
@@ -450,11 +461,15 @@ def _parse_run_id_to_experiment_name(request_context: AuthorizationRequest) -> t
 
 
 def _parse_dataset_id_to_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
-    return (_resolve_dataset_name_from_dataset_id(_get_request_param(request_context, "dataset_id")),)
+    return (
+        _resolve_dataset_name_from_dataset_id(_get_request_param(request_context, "dataset_id")),
+    )
 
 
 def _parse_model_id_to_experiment_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
-    return (_resolve_experiment_name_from_model_id(_get_request_param(request_context, "model_id")),)
+    return (
+        _resolve_experiment_name_from_model_id(_get_request_param(request_context, "model_id")),
+    )
 
 
 def _parse_registered_model_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
@@ -469,7 +484,9 @@ def _parse_webhook_id_to_registered_model_name(
     request_context: AuthorizationRequest,
 ) -> tuple[str, ...]:
     return (
-        _resolve_registered_model_name_from_webhook_id(_get_request_param(request_context, "webhook_id")),
+        _resolve_registered_model_name_from_webhook_id(
+            _get_request_param(request_context, "webhook_id")
+        ),
     )
 
 
@@ -478,24 +495,45 @@ def _parse_job_id_to_experiment_name(request_context: AuthorizationRequest) -> t
 
 
 def _parse_issue_id_to_experiment_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
-    return (_resolve_experiment_name_from_issue_id(_get_request_param(request_context, "issue_id")),)
+    return (
+        _resolve_experiment_name_from_issue_id(_get_request_param(request_context, "issue_id")),
+    )
 
 
 def _parse_trace_request_id_to_experiment_name(
     request_context: AuthorizationRequest,
 ) -> tuple[str, ...]:
-    return (_resolve_experiment_name_from_trace_id(_get_request_param(request_context, "request_id")),)
+    return (
+        _resolve_experiment_name_from_trace_id(_get_request_param(request_context, "request_id")),
+    )
 
 
 def _parse_trace_id_to_experiment_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
-    return (_resolve_experiment_name_from_trace_id(_get_request_param(request_context, "trace_id")),)
+    return (
+        _resolve_experiment_name_from_trace_id(_get_request_param(request_context, "trace_id")),
+    )
+
+
+def _parse_optional_trace_ids_to_experiment_names(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    trace_ids = _get_request_param_values(request_context, "trace_ids")
+    if not trace_ids:
+        raise ResourceReferenceNotPresentError(
+            "Issue invocation request did not reference any trace IDs."
+        )
+    return tuple(
+        _resolve_experiment_name_from_trace_id(trace_id) for trace_id in dict.fromkeys(trace_ids)
+    )
 
 
 def _parse_trace_v3_experiment_id_to_name(
     request_context: AuthorizationRequest,
 ) -> tuple[str, ...]:
     if not isinstance(request_context.json_body, dict):
-        raise ResourceNameResolutionError("StartTraceV3 request body is required for authorization.")
+        raise ResourceNameResolutionError(
+            "StartTraceV3 request body is required for authorization."
+        )
 
     trace = _get_nested_mapping(
         request_context.json_body,
@@ -550,8 +588,21 @@ def _parse_otel_experiment_id_header_to_name(
 
 def _parse_gateway_secret_id_to_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
     return (
-        _resolve_gateway_secret_name_from_secret_id(_get_request_param(request_context, "secret_id")),
+        _resolve_gateway_secret_name_from_secret_id(
+            _get_request_param(request_context, "secret_id")
+        ),
     )
+
+
+def _parse_optional_gateway_secret_id_to_name(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    secret_id = _get_optional_request_param(request_context, "secret_id")
+    if secret_id is None:
+        raise ResourceReferenceNotPresentError(
+            "Issue invocation request did not reference a gateway secret."
+        )
+    return (_resolve_gateway_secret_name_from_secret_id(secret_id),)
 
 
 def _parse_gateway_endpoint_id_to_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
@@ -560,6 +611,17 @@ def _parse_gateway_endpoint_id_to_name(request_context: AuthorizationRequest) ->
             _get_request_param(request_context, "endpoint_id")
         ),
     )
+
+
+def _parse_optional_gateway_endpoint_name(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    endpoint_name = _get_optional_request_param(request_context, "endpoint_name")
+    if endpoint_name is None:
+        raise ResourceReferenceNotPresentError(
+            "Issue invocation request did not reference a gateway endpoint."
+        )
+    return (endpoint_name,)
 
 
 def _parse_gateway_proxy_endpoint_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
@@ -607,9 +669,7 @@ def resolve_gateway_model_definition_names_for_use(
     if isinstance(request_context.json_body, dict):
         model_config = request_context.json_body.get("model_config")
         if isinstance(model_config, dict):
-            model_definition_ids.extend(
-                _normalize_values(model_config.get("model_definition_id"))
-            )
+            model_definition_ids.extend(_normalize_values(model_config.get("model_definition_id")))
         model_configs = request_context.json_body.get("model_configs")
         if isinstance(model_configs, list):
             for model_config in model_configs:
@@ -697,7 +757,9 @@ def _parse_graphql_run_id_to_experiment_name(
     ):
         run_id = _normalize_string(input_payload.get("runId") or input_payload.get("run_id"))
         if run_id is None:
-            run_id = _normalize_string(input_payload.get("runUuid") or input_payload.get("run_uuid"))
+            run_id = _normalize_string(
+                input_payload.get("runUuid") or input_payload.get("run_uuid")
+            )
         if run_id is None:
             raise ResourceNameResolutionError("GraphQL run query did not include a run ID.")
         names.append(_resolve_experiment_name_from_run_id(run_id))
@@ -752,14 +814,21 @@ RESOURCE_NAME_PARSERS: dict[str, "Callable[[AuthorizationRequest], tuple[str, ..
         _parse_trace_request_id_to_experiment_name
     ),
     RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME: _parse_trace_id_to_experiment_name,
+    RESOURCE_NAME_PARSER_OPTIONAL_TRACE_IDS_TO_EXPERIMENT_NAMES: (
+        _parse_optional_trace_ids_to_experiment_names
+    ),
     RESOURCE_NAME_PARSER_TRACE_V3_EXPERIMENT_ID_TO_NAME: _parse_trace_v3_experiment_id_to_name,
     RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME: _parse_artifact_experiment_id_to_name,
     RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME: (
         _parse_otel_experiment_id_header_to_name
     ),
     RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME: _parse_gateway_secret_id_to_name,
+    RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_SECRET_ID_TO_NAME: (
+        _parse_optional_gateway_secret_id_to_name
+    ),
     RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME: _parse_gateway_endpoint_id_to_name,
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME: _parse_gateway_proxy_endpoint_name,
+    RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME: _parse_optional_gateway_endpoint_name,
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME: (
         _parse_gateway_model_definition_id_to_name
     ),
@@ -782,9 +851,7 @@ def resolve_resource_names(
     for parser_id in parser_ids:
         parser = RESOURCE_NAME_PARSERS.get(parser_id)
         if parser is None:
-            raise ResourceNameResolutionError(
-                f"Unknown resource-name parser '{parser_id}'."
-            )
+            raise ResourceNameResolutionError(f"Unknown resource-name parser '{parser_id}'.")
         for name in parser(request_context):
             normalized_name = _normalize_string(name)
             if normalized_name is None or normalized_name in seen:
