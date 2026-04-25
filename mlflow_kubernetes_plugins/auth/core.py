@@ -340,13 +340,13 @@ def _extract_workspace_scope_from_request(
     return None
 
 
-def _enforce_gateway_dependency_permissions(
+async def _enforce_gateway_dependency_permissions(
     authorizer: "KubernetesAuthorizer",
     identity: _RequestIdentity,
     request_context: AuthorizationRequest,
     workspace_name: str | None,
     rule: AuthorizationRule,
-) -> None:
+) -> AuthorizationRequest:
     """
     Enforce cross-resource dependency permissions for gateway operations.
 
@@ -359,7 +359,9 @@ def _enforce_gateway_dependency_permissions(
     to read a resource without having 'create' on '<resource>/use' to reference it.
     """
     if not workspace_name:
-        return
+        return request_context
+
+    updated_request_context = request_context
 
     # Gateway endpoints require USE permission on model definitions.
     if (
@@ -370,11 +372,23 @@ def _enforce_gateway_dependency_permissions(
         if authorizer.is_allowed(
             identity, RESOURCE_GATEWAY_MODEL_DEFINITIONS, "create", workspace_name, "use"
         ):
-            return
+            return updated_request_context
         try:
-            dependency_names = resolve_gateway_model_definition_names_for_use(request_context)
+            dependency_names = resolve_gateway_model_definition_names_for_use(updated_request_context)
         except ResourceNameResolutionError:
             dependency_names = ()
+        if not dependency_names:
+            updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+            try:
+                dependency_names = resolve_gateway_model_definition_names_for_use(
+                    updated_request_context
+                )
+            except ResourceNameResolutionError:
+                dependency_names = ()
+        if not dependency_names and rule.verb == "update":
+            dependency_names = _resolve_existing_gateway_model_definition_names_for_use(
+                updated_request_context
+            )
         if dependency_names and all(
             authorizer.is_allowed(
                 identity,
@@ -386,7 +400,7 @@ def _enforce_gateway_dependency_permissions(
             )
             for dependency_name in dependency_names
         ):
-            return
+            return updated_request_context
         raise MlflowException(
             "Permission denied: creating or updating a gateway endpoint requires "
             "'use' permission on gateway model definitions.",
@@ -402,11 +416,21 @@ def _enforce_gateway_dependency_permissions(
         if authorizer.is_allowed(
             identity, RESOURCE_GATEWAY_SECRETS, "create", workspace_name, "use"
         ):
-            return
+            return updated_request_context
         try:
-            dependency_names = resolve_gateway_secret_names_for_use(request_context)
+            dependency_names = resolve_gateway_secret_names_for_use(updated_request_context)
         except ResourceNameResolutionError:
             dependency_names = ()
+        if not dependency_names:
+            updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+            try:
+                dependency_names = resolve_gateway_secret_names_for_use(updated_request_context)
+            except ResourceNameResolutionError:
+                dependency_names = ()
+        if not dependency_names and rule.verb == "update":
+            dependency_names = _resolve_existing_gateway_secret_names_for_use(
+                updated_request_context
+            )
         if dependency_names and all(
             authorizer.is_allowed(
                 identity,
@@ -418,12 +442,74 @@ def _enforce_gateway_dependency_permissions(
             )
             for dependency_name in dependency_names
         ):
-            return
+            return updated_request_context
         raise MlflowException(
             "Permission denied: creating or updating a gateway model definition requires "
             "'use' permission on gateway secrets.",
             error_code=databricks_pb2.PERMISSION_DENIED,
         )
+
+    return updated_request_context
+
+
+def _get_request_mapping_value(request_context: AuthorizationRequest, *keys: str) -> str | None:
+    if isinstance(request_context.json_body, dict):
+        for key in keys:
+            value = request_context.json_body.get(key)
+            if isinstance(value, str) and (normalized := value.strip()):
+                return normalized
+    for key in keys:
+        value = request_context.path_params.get(key)
+        if isinstance(value, str) and (normalized := value.strip()):
+            return normalized
+    return None
+
+
+def _resolve_existing_gateway_model_definition_names_for_use(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    endpoint_id = _get_request_mapping_value(request_context, "endpoint_id", "endpointId")
+    if endpoint_id is None:
+        return ()
+
+    from mlflow_kubernetes_plugins.auth.resource_names import _get_tracking_store
+
+    try:
+        endpoint = _get_tracking_store().get_gateway_endpoint(endpoint_id=endpoint_id)
+    except MlflowException:
+        return ()
+
+    dependency_names: list[str] = []
+    for mapping in getattr(endpoint, "model_mappings", ()) or ():
+        model_definition = getattr(mapping, "model_definition", None)
+        name = getattr(model_definition, "name", None)
+        if isinstance(name, str) and (normalized := name.strip()):
+            dependency_names.append(normalized)
+    return tuple(dict.fromkeys(dependency_names))
+
+
+def _resolve_existing_gateway_secret_names_for_use(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    model_definition_id = _get_request_mapping_value(
+        request_context, "model_definition_id", "modelDefinitionId"
+    )
+    if model_definition_id is None:
+        return ()
+
+    from mlflow_kubernetes_plugins.auth.resource_names import _get_tracking_store
+
+    try:
+        model_definition = _get_tracking_store().get_gateway_model_definition(
+            model_definition_id=model_definition_id
+        )
+    except MlflowException:
+        return ()
+
+    secret_name = getattr(model_definition, "secret_name", None)
+    if isinstance(secret_name, str) and (normalized := secret_name.strip()):
+        return (normalized,)
+    return ()
 
 
 async def _enforce_gateway_budget_scope(
@@ -660,7 +746,7 @@ async def _authorize_request_async(
                     "Permission denied for requested operation.",
                     error_code=databricks_pb2.PERMISSION_DENIED,
                 )
-            _enforce_gateway_dependency_permissions(
+            updated_request_context = await _enforce_gateway_dependency_permissions(
                 authorizer, identity, updated_request_context, workspace_name, rule
             )
         elif rule.workspace_access_check and not rule.apply_workspace_filter:
