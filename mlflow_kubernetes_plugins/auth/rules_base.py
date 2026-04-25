@@ -173,6 +173,7 @@ from mlflow_kubernetes_plugins.auth.resource_names import (
     RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES,
     RESOURCE_NAME_PARSER_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,
@@ -665,7 +666,7 @@ BASE_REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[Authoriza
     CreateGatewayEndpoint: _gateway_endpoints_rule("create"),
     GetGatewayEndpoint: _gateway_endpoints_rule(
         "get",
-        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
     ),
     UpdateGatewayEndpoint: _gateway_endpoints_rule(
         "update",

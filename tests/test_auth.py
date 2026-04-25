@@ -127,6 +127,7 @@ from mlflow_kubernetes_plugins.auth.resource_names import (
     RESOURCE_NAME_PARSER_EXPERIMENT_ID_TO_NAME,
     RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES,
     RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,
+    RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME,
     RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME,
@@ -140,6 +141,7 @@ from mlflow_kubernetes_plugins.auth.resource_names import (
     RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_TRACE_V3_EXPERIMENT_ID_TO_NAME,
     RESOURCE_NAME_PARSER_WEBHOOK_ID_TO_REGISTERED_MODEL_NAME,
+    ResourceNameResolutionError,
     _NameLookupCache,
     apply_response_cache_updates,
     resolve_resource_names,
@@ -1080,6 +1082,191 @@ def test_gateway_model_definition_update_requires_existing_secret_use(monkeypatc
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
     assert "'use' permission on gateway secrets" in exc.value.message
     assert authorizer.is_allowed.call_args_list[-1].kwargs == {"resource_name": "secret-a"}
+
+
+def test_gateway_endpoint_get_allows_named_access_with_name_selector(monkeypatch):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [False, True]
+    rule = AuthorizationRule(
+        "get",
+        resource=RESOURCE_GATEWAY_ENDPOINTS,
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer endpoint-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/2.0/mlflow/gateway/endpoints/get",
+            method="GET",
+            workspace="team-a",
+            query_params={"name": "endpoint-alpha"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    first_call = authorizer.is_allowed.call_args_list[0]
+    assert first_call.args[1:] == (RESOURCE_GATEWAY_ENDPOINTS, "get", "team-a", None)
+    assert first_call.kwargs == {}
+
+    second_call = authorizer.is_allowed.call_args_list[1]
+    assert second_call.args[1:] == (RESOURCE_GATEWAY_ENDPOINTS, "get", "team-a", None)
+    assert second_call.kwargs == {"resource_name": "endpoint-alpha"}
+
+
+def test_gateway_endpoint_get_allows_named_access_with_endpoint_id_selector(monkeypatch):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [False, True]
+    rule = AuthorizationRule(
+        "get",
+        resource=RESOURCE_GATEWAY_ENDPOINTS,
+        resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer endpoint-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/2.0/mlflow/gateway/endpoints/get",
+            method="GET",
+            workspace="team-a",
+            query_params={"endpoint_id": "endpoint-id-1"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    second_call = authorizer.is_allowed.call_args_list[1]
+    assert second_call.args[1:] == (RESOURCE_GATEWAY_ENDPOINTS, "get", "team-a", None)
+    assert second_call.kwargs == {"resource_name": "endpoint-alpha"}
+
+
+def test_resolve_resource_names_accepts_gateway_endpoint_id_or_name_selector(monkeypatch):
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    names = resolve_resource_names(
+        AuthorizationRequest(
+            authorization_header=None,
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/2.0/mlflow/gateway/endpoints/get",
+            method="GET",
+            workspace="team-a",
+            query_params={"endpoint_id": "endpoint-id-1"},
+        ),
+        (RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
+    )
+
+    assert names == ("endpoint-alpha",)
+
+
+def test_resolve_resource_names_accepts_matching_gateway_endpoint_selectors(monkeypatch):
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    names = resolve_resource_names(
+        AuthorizationRequest(
+            authorization_header=None,
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/2.0/mlflow/gateway/endpoints/get",
+            method="GET",
+            workspace="team-a",
+            query_params={"endpoint_id": "endpoint-id-1", "name": "endpoint-alpha"},
+        ),
+        (RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
+    )
+
+    assert names == ("endpoint-alpha",)
+
+
+def test_resolve_resource_names_rejects_conflicting_gateway_endpoint_selectors(monkeypatch):
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    with pytest.raises(ResourceNameResolutionError, match="Conflicting endpoint selectors"):
+        resolve_resource_names(
+            AuthorizationRequest(
+                authorization_header=None,
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/2.0/mlflow/gateway/endpoints/get",
+                method="GET",
+                workspace="team-a",
+                query_params={"endpoint_id": "endpoint-id-1", "name": "endpoint-beta"},
+            ),
+            (RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
+        )
+
+
+def test_resolve_resource_names_rejects_missing_gateway_endpoint_selectors():
+    with pytest.raises(
+        ResourceNameResolutionError, match="Missing required parameter 'endpoint_id' or 'name'"
+    ):
+        resolve_resource_names(
+            AuthorizationRequest(
+                authorization_header=None,
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/2.0/mlflow/gateway/endpoints/get",
+                method="GET",
+                workspace="team-a",
+                query_params={},
+            ),
+            (RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
+        )
 
 
 def test_gateway_endpoint_create_allows_named_model_definition_use(monkeypatch):
@@ -3518,7 +3705,7 @@ def test_gateway_request_rules_use_resource_name_parsers():
     )
     assert REQUEST_AUTHORIZATION_RULES[CreateGatewayEndpoint].resource_name_parsers == ()
     assert REQUEST_AUTHORIZATION_RULES[GetGatewayEndpoint].resource_name_parsers == (
-        RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,
+        RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,
     )
     assert REQUEST_AUTHORIZATION_RULES[CreateGatewayModelDefinition].resource_name_parsers == ()
     assert REQUEST_AUTHORIZATION_RULES[GetGatewayModelDefinition].resource_name_parsers == (
