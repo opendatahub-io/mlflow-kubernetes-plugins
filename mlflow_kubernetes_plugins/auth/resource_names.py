@@ -41,6 +41,7 @@ RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME = "otel_experiment_id_hea
 RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME = "gateway_secret_id_to_name"
 RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_SECRET_ID_TO_NAME = "optional_gateway_secret_id_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME = "gateway_endpoint_id_to_name"
+RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME = "gateway_endpoint_selector_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME = "gateway_proxy_endpoint_name"
 RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME = "optional_gateway_endpoint_name"
 RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME = "gateway_model_definition_id_to_name"
@@ -613,6 +614,28 @@ def _parse_gateway_endpoint_id_to_name(request_context: AuthorizationRequest) ->
     )
 
 
+def _parse_gateway_endpoint_selector_to_name(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    endpoint_id = _get_optional_request_param(request_context, "endpoint_id")
+    endpoint_name = _get_optional_request_param(request_context, "name")
+
+    if endpoint_id is not None:
+        resolved_name = _resolve_gateway_endpoint_name_from_endpoint_id(endpoint_id)
+        if endpoint_name is not None and endpoint_name != resolved_name:
+            raise ResourceNameResolutionError(
+                "Conflicting endpoint selectors in endpoint_id and name."
+            )
+        return (resolved_name,)
+
+    if endpoint_name is not None:
+        return (endpoint_name,)
+
+    raise ResourceNameResolutionError(
+        "Missing required parameter 'endpoint_id' or 'name' for authorization."
+    )
+
+
 def _parse_optional_gateway_endpoint_name(
     request_context: AuthorizationRequest,
 ) -> tuple[str, ...]:
@@ -827,6 +850,9 @@ RESOURCE_NAME_PARSERS: dict[str, "Callable[[AuthorizationRequest], tuple[str, ..
         _parse_optional_gateway_secret_id_to_name
     ),
     RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME: _parse_gateway_endpoint_id_to_name,
+    RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME: (
+        _parse_gateway_endpoint_selector_to_name
+    ),
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME: _parse_gateway_proxy_endpoint_name,
     RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME: _parse_optional_gateway_endpoint_name,
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME: (
@@ -906,6 +932,7 @@ __all__ = [
     "RESOURCE_NAME_PARSER_EXPERIMENT_IDS_TO_NAMES",
     "RESOURCE_NAME_PARSER_EXPERIMENT_NAME",
     "RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME",
+    "RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME",
     "RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME",
     "RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME",
     "RESOURCE_NAME_PARSER_GATEWAY_SECRET_ID_TO_NAME",
