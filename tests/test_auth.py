@@ -805,11 +805,22 @@ def test_gateway_endpoint_create_requires_model_definition_use(monkeypatch):
     )
 
 
-def test_gateway_endpoint_update_requires_model_definition_use(monkeypatch):
+def test_gateway_endpoint_update_allows_existing_named_model_definition_use(monkeypatch):
     app = Flask(__name__)
     authorizer = Mock()
-    # First call: endpoint update allowed, second call: model definitions use denied
-    authorizer.is_allowed.side_effect = [True, False]
+
+    def _is_allowed(identity, resource, verb, namespace, subresource=None, resource_name=None):
+        if resource == RESOURCE_GATEWAY_ENDPOINTS:
+            return True
+        if (
+            resource == RESOURCE_GATEWAY_MODEL_DEFINITIONS
+            and subresource == "use"
+            and resource_name == "model-def-a"
+        ):
+            return True
+        return False
+
+    authorizer.is_allowed.side_effect = _is_allowed
     rule = AuthorizationRule("update", resource=RESOURCE_GATEWAY_ENDPOINTS)
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -818,6 +829,70 @@ def test_gateway_endpoint_update_requires_model_definition_use(monkeypatch):
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                model_mappings=[
+                    SimpleNamespace(model_definition=SimpleNamespace(name="model-def-a"))
+                ]
+            )
+        ),
+    )
+
+    with app.test_request_context(
+        "/api/2.0/mlflow/gateway/endpoints/update",
+        method="PATCH",
+        data=json.dumps({"endpoint_id": "ep-1"}),
+        content_type="application/json",
+    ):
+        _authorize_request(
+            AuthorizationRequest(
+                authorization_header="Bearer token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/2.0/mlflow/gateway/endpoints/update",
+                method="PATCH",
+                workspace="team-a",
+                json_body={"endpoint_id": "ep-1"},
+            ),
+            authorizer=authorizer,
+            config_values=KubernetesAuthConfig(),
+        )
+
+    assert authorizer.is_allowed.call_args_list[1][0][1:] == (
+        RESOURCE_GATEWAY_MODEL_DEFINITIONS,
+        "create",
+        "team-a",
+        "use",
+    )
+    assert authorizer.is_allowed.call_args_list[-1].kwargs == {"resource_name": "model-def-a"}
+
+
+def test_gateway_endpoint_update_requires_existing_model_definition_use(monkeypatch):
+    app = Flask(__name__)
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [True, False, False]
+    rule = AuthorizationRule("update", resource=RESOURCE_GATEWAY_ENDPOINTS)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                model_mappings=[
+                    SimpleNamespace(model_definition=SimpleNamespace(name="model-def-a"))
+                ]
+            )
+        ),
     )
 
     with app.test_request_context(
@@ -836,6 +911,7 @@ def test_gateway_endpoint_update_requires_model_definition_use(monkeypatch):
                     path="/api/2.0/mlflow/gateway/endpoints/update",
                     method="PATCH",
                     workspace="team-a",
+                    json_body={"endpoint_id": "ep-1"},
                 ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
@@ -843,13 +919,7 @@ def test_gateway_endpoint_update_requires_model_definition_use(monkeypatch):
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
     assert "'use' permission on gateway model definitions" in exc.value.message
-    # Verify 'create' verb on 'gatewaymodeldefinitions/use' subresource
-    assert authorizer.is_allowed.call_args_list[1][0][1:] == (
-        RESOURCE_GATEWAY_MODEL_DEFINITIONS,
-        "create",
-        "team-a",
-        "use",
-    )
+    assert authorizer.is_allowed.call_args_list[-1].kwargs == {"resource_name": "model-def-a"}
 
 
 def test_gateway_model_definition_create_requires_secret_use(monkeypatch):
@@ -899,11 +969,22 @@ def test_gateway_model_definition_create_requires_secret_use(monkeypatch):
     )
 
 
-def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
+def test_gateway_model_definition_update_allows_existing_named_secret_use(monkeypatch):
     app = Flask(__name__)
     authorizer = Mock()
-    # First call: model definition update allowed, second call: secrets use denied
-    authorizer.is_allowed.side_effect = [True, False]
+
+    def _is_allowed(identity, resource, verb, namespace, subresource=None, resource_name=None):
+        if resource == RESOURCE_GATEWAY_MODEL_DEFINITIONS:
+            return True
+        if (
+            resource == RESOURCE_GATEWAY_SECRETS
+            and subresource == "use"
+            and resource_name == "secret-a"
+        ):
+            return True
+        return False
+
+    authorizer.is_allowed.side_effect = _is_allowed
     rule = AuthorizationRule("update", resource=RESOURCE_GATEWAY_MODEL_DEFINITIONS)
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -912,6 +993,66 @@ def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_model_definition=lambda model_definition_id=None, name=None: SimpleNamespace(
+                secret_name="secret-a"
+            )
+        ),
+    )
+
+    with app.test_request_context(
+        "/api/2.0/mlflow/gateway/model-definitions/update",
+        method="PATCH",
+        data=json.dumps({"model_definition_id": "md-1"}),
+        content_type="application/json",
+    ):
+        _authorize_request(
+            AuthorizationRequest(
+                authorization_header="Bearer token",
+                forwarded_access_token=None,
+                remote_user_header_value=None,
+                remote_groups_header_value=None,
+                path="/api/2.0/mlflow/gateway/model-definitions/update",
+                method="PATCH",
+                workspace="team-a",
+                json_body={"model_definition_id": "md-1"},
+            ),
+            authorizer=authorizer,
+            config_values=KubernetesAuthConfig(),
+        )
+
+    assert authorizer.is_allowed.call_args_list[1][0][1:] == (
+        RESOURCE_GATEWAY_SECRETS,
+        "create",
+        "team-a",
+        "use",
+    )
+    assert authorizer.is_allowed.call_args_list[-1].kwargs == {"resource_name": "secret-a"}
+
+
+def test_gateway_model_definition_update_requires_existing_secret_use(monkeypatch):
+    app = Flask(__name__)
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [True, False, False]
+    rule = AuthorizationRule("update", resource=RESOURCE_GATEWAY_MODEL_DEFINITIONS)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_model_definition=lambda model_definition_id=None, name=None: SimpleNamespace(
+                secret_name="secret-a"
+            )
+        ),
     )
 
     with app.test_request_context(
@@ -930,6 +1071,7 @@ def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
                     path="/api/2.0/mlflow/gateway/model-definitions/update",
                     method="PATCH",
                     workspace="team-a",
+                    json_body={"model_definition_id": "md-1"},
                 ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
@@ -937,13 +1079,7 @@ def test_gateway_model_definition_update_requires_secret_use(monkeypatch):
 
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
     assert "'use' permission on gateway secrets" in exc.value.message
-    # Verify 'create' verb on 'gatewaysecrets/use' subresource
-    assert authorizer.is_allowed.call_args_list[1][0][1:] == (
-        RESOURCE_GATEWAY_SECRETS,
-        "create",
-        "team-a",
-        "use",
-    )
+    assert authorizer.is_allowed.call_args_list[-1].kwargs == {"resource_name": "secret-a"}
 
 
 def test_gateway_endpoint_create_allows_named_model_definition_use(monkeypatch):
