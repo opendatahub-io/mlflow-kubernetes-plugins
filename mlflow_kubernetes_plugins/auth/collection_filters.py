@@ -25,10 +25,16 @@ if TYPE_CHECKING:
 
 COLLECTION_POLICY_BROAD_ONLY = "broad_only"
 COLLECTION_POLICY_GRAPHQL_FILTER = "graphql_filter"
-COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS = "request_filter_experiment_ids"
-COLLECTION_POLICY_REQUEST_EXPERIMENT_ID = "request_filter_experiment_id"
-COLLECTION_POLICY_REQUEST_RUN_IDS = "request_filter_run_ids"
-COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS = "request_filter_trace_locations"
+COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY = "request_filter_experiment_ids_body"
+COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY = "request_filter_experiment_id_body"
+COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST = (
+    "request_filter_experiment_id_query_get_body_post"
+)
+COLLECTION_POLICY_REQUEST_RUN_ID_QUERY = "request_filter_run_id_query"
+COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY = (
+    "request_filter_run_ids_query_get_body_on_empty_query"
+)
+COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS_BODY = "request_filter_trace_locations_body"
 COLLECTION_POLICY_RESPONSE_DATASET_SUMMARIES = "response_filter_dataset_summaries"
 COLLECTION_POLICY_RESPONSE_EXPERIMENTS = "response_filter_experiments"
 COLLECTION_POLICY_RESPONSE_REGISTERED_MODELS = "response_filter_registered_models"
@@ -38,11 +44,16 @@ COLLECTION_POLICY_RESPONSE_TRACES = "response_filter_traces"
 _EXPERIMENT_READ_RULE = (RESOURCE_EXPERIMENTS, "get")
 _REGISTERED_MODEL_READ_RULE = (RESOURCE_REGISTERED_MODELS, "get")
 
+_MISSING = object()
+_INVALID = object()
+
 _REQUEST_FILTER_POLICIES = {
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
-    COLLECTION_POLICY_REQUEST_RUN_IDS,
-    COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
+    COLLECTION_POLICY_REQUEST_RUN_ID_QUERY,
+    COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
+    COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS_BODY,
 }
 _RESPONSE_FILTER_POLICIES = {
     COLLECTION_POLICY_RESPONSE_DATASET_SUMMARIES,
@@ -189,212 +200,298 @@ def filter_readable_run_ids(
     return readable_ids
 
 
-def _request_values(request_context: AuthorizationRequest, key: str) -> list[str]:
-    """Collect a request field from JSON body and query params.
-
-    These request filters intentionally consider both body and query params because some MLflow
-    routes still send identifiers in the query string even on mutating requests.
-    """
-    values: list[str] = []
-    if isinstance(request_context.json_body, dict):
-        body_value = request_context.json_body.get(key)
-        if isinstance(body_value, list):
-            values.extend(str(value) for value in body_value)
-        elif body_value is not None:
-            values.append(str(body_value))
-
-    query_value = request_context.query_params.get(key)
-    if isinstance(query_value, list):
-        values.extend(str(value) for value in query_value)
-    elif query_value is not None:
-        values.append(str(query_value))
-
-    return values
+def _contains_any_key(mapping: dict[str, object] | None, *candidate_keys: str) -> bool:
+    return mapping is not None and any(key in mapping for key in candidate_keys)
 
 
-def _normalize_request_values(value: object) -> list[str]:
+def _extract_mapping_field(
+    mapping: dict[str, object] | None, *candidate_keys: str
+) -> tuple[object, str | None]:
+    if mapping is None:
+        return _MISSING, None
+    present_keys = [key for key in candidate_keys if key in mapping]
+    if not present_keys:
+        return _MISSING, None
+    if len(present_keys) > 1:
+        return _INVALID, None
+    key = present_keys[0]
+    return mapping.get(key), key
+
+
+def _normalize_strict_request_values(value: object, *, allow_scalar: bool) -> list[str] | object:
     if isinstance(value, list):
-        return [normalized for item in value if (normalized := _normalize_string(item))]
-    if value is None:
-        return []
-    normalized = _normalize_string(value)
-    return [normalized] if normalized is not None else []
+        raw_values = value
+    elif value is None or not allow_scalar:
+        return _INVALID
+    else:
+        raw_values = [value]
+
+    normalized_values: list[str] = []
+    for raw_value in raw_values:
+        normalized_value = _normalize_string(raw_value)
+        if normalized_value is None:
+            return _INVALID
+        normalized_values.append(normalized_value)
+    return normalized_values
 
 
-def _normalize_request_value(value: object) -> str | None:
-    values = _normalize_request_values(value)
-    if not values:
-        return None
-    first_value = values[0]
-    return first_value if all(value == first_value for value in values[1:]) else None
+def _normalize_strict_request_value(value: object) -> str | object:
+    if value is None or isinstance(value, list):
+        return _INVALID
+    normalized_value = _normalize_string(value)
+    return normalized_value if normalized_value is not None else _INVALID
 
 
-def _filter_request_experiment_ids(
+def _filter_request_experiment_ids_body(
     request_context: AuthorizationRequest,
     authorizer: "KubernetesAuthorizer",
     identity: "_RequestIdentity",
     workspace_name: str,
 ) -> tuple[AuthorizationRequest, bool]:
-    body_has_experiment_ids = (
-        isinstance(request_context.json_body, dict) and "experiment_ids" in request_context.json_body
-    )
-    query_has_experiment_ids = "experiment_ids" in request_context.query_params
-    if not body_has_experiment_ids and not query_has_experiment_ids:
+    body = request_context.json_body if isinstance(request_context.json_body, dict) else None
+
+    raw_body_value, body_key = _extract_mapping_field(body, "experiment_ids", "experimentIds")
+    if raw_body_value is _MISSING:
+        return request_context, False
+    if raw_body_value is _INVALID or body_key is None:
         return request_context, False
 
-    body_experiment_ids = (
-        _normalize_request_values(request_context.json_body.get("experiment_ids"))
-        if body_has_experiment_ids and isinstance(request_context.json_body, dict)
-        else []
-    )
-    query_experiment_ids = (
-        _normalize_request_values(request_context.query_params.get("experiment_ids"))
-        if query_has_experiment_ids
-        else []
-    )
+    body_experiment_ids = _normalize_strict_request_values(raw_body_value, allow_scalar=False)
+    if body_experiment_ids is _INVALID:
+        return request_context, False
+    assert isinstance(body_experiment_ids, list)
+
     readable_body_ids = filter_readable_experiment_ids(
         authorizer,
         identity,
         workspace_name,
         body_experiment_ids,
     )
-    readable_query_ids = filter_readable_experiment_ids(
-        authorizer,
-        identity,
-        workspace_name,
-        query_experiment_ids,
-    )
-    if not readable_body_ids and not readable_query_ids:
+    if not readable_body_ids:
         return request_context, False
 
-    updated_request_context = request_context
-    if body_has_experiment_ids and isinstance(request_context.json_body, dict):
-        filtered_body = dict(request_context.json_body)
-        filtered_body["experiment_ids"] = readable_body_ids
-        updated_request_context = replace(updated_request_context, json_body=filtered_body)
-
-    if query_has_experiment_ids:
-        filtered_query_params = dict(request_context.query_params)
-        if readable_query_ids:
-            filtered_query_params["experiment_ids"] = readable_query_ids
-        else:
-            filtered_query_params.pop("experiment_ids", None)
-        updated_request_context = replace(updated_request_context, query_params=filtered_query_params)
-
-    return updated_request_context, True
+    filtered_body = dict(body)
+    filtered_body[body_key] = readable_body_ids
+    return replace(request_context, json_body=filtered_body), True
 
 
-def _filter_request_single_experiment_id(
+def _filter_request_single_experiment_id_body(
     request_context: AuthorizationRequest,
     authorizer: "KubernetesAuthorizer",
     identity: "_RequestIdentity",
     workspace_name: str,
 ) -> tuple[AuthorizationRequest, bool]:
-    body_has_experiment_id = (
-        isinstance(request_context.json_body, dict) and "experiment_id" in request_context.json_body
-    )
-    query_has_experiment_id = "experiment_id" in request_context.query_params
-    if not body_has_experiment_id and not query_has_experiment_id:
+    body = request_context.json_body if isinstance(request_context.json_body, dict) else None
+
+    # Protobuf JSON parsing accepts both the proto field name and its json_name alias in the body.
+    raw_body_value, _ = _extract_mapping_field(body, "experiment_id", "experimentId")
+    if raw_body_value is _MISSING:
+        return request_context, False
+    if raw_body_value is _INVALID:
         return request_context, False
 
-    body_experiment_id = (
-        _normalize_request_value(request_context.json_body.get("experiment_id"))
-        if body_has_experiment_id and isinstance(request_context.json_body, dict)
-        else None
-    )
-    query_experiment_id = (
-        _normalize_request_value(request_context.query_params.get("experiment_id"))
-        if query_has_experiment_id
-        else None
-    )
-
-    if body_has_experiment_id and (
-        body_experiment_id is None
-        or not _can_read_experiment_id(authorizer, identity, workspace_name, body_experiment_id)
-    ):
-        return request_context, False
-    if query_has_experiment_id and (
-        query_experiment_id is None
-        or not _can_read_experiment_id(authorizer, identity, workspace_name, query_experiment_id)
+    body_experiment_id = _normalize_strict_request_value(raw_body_value)
+    if body_experiment_id is _INVALID or not _can_read_experiment_id(
+        authorizer, identity, workspace_name, body_experiment_id
     ):
         return request_context, False
 
     return request_context, True
 
 
-def _filter_request_run_ids(
+def _filter_request_single_experiment_id_query(
     request_context: AuthorizationRequest,
     authorizer: "KubernetesAuthorizer",
     identity: "_RequestIdentity",
     workspace_name: str,
 ) -> tuple[AuthorizationRequest, bool]:
-    body_has_run_ids = isinstance(request_context.json_body, dict) and "run_ids" in request_context.json_body
-    query_has_run_ids = "run_ids" in request_context.query_params
-    if not body_has_run_ids and not query_has_run_ids:
+    raw_query_value, _ = _extract_mapping_field(request_context.query_params, "experiment_id")
+    if raw_query_value is _MISSING:
+        return request_context, False
+    if raw_query_value is _INVALID:
         return request_context, False
 
-    body_run_ids = (
-        _normalize_request_values(request_context.json_body.get("run_ids"))
-        if body_has_run_ids and isinstance(request_context.json_body, dict)
-        else []
-    )
-    query_run_ids = (
-        _normalize_request_values(request_context.query_params.get("run_ids")) if query_has_run_ids else []
-    )
+    query_experiment_id = _normalize_strict_request_value(raw_query_value)
+    if query_experiment_id is _INVALID or not _can_read_experiment_id(
+        authorizer, identity, workspace_name, query_experiment_id
+    ):
+        return request_context, False
+
+    return request_context, True
+
+
+def _filter_request_single_experiment_id_query_get_body_post(
+    request_context: AuthorizationRequest,
+    authorizer: "KubernetesAuthorizer",
+    identity: "_RequestIdentity",
+    workspace_name: str,
+) -> tuple[AuthorizationRequest, bool]:
+    method = request_context.method.upper()
+    if method == "GET":
+        if request_context.query_params:
+            return _filter_request_single_experiment_id_query(
+                request_context, authorizer, identity, workspace_name
+            )
+        # Upstream _get_request_message() falls back to the JSON body on GET when args are empty.
+        return _filter_request_single_experiment_id_body(
+            request_context, authorizer, identity, workspace_name
+        )
+    if method == "POST":
+        return _filter_request_single_experiment_id_body(
+            request_context, authorizer, identity, workspace_name
+        )
+    return request_context, False
+
+
+def _filter_request_run_ids_body(
+    request_context: AuthorizationRequest,
+    authorizer: "KubernetesAuthorizer",
+    identity: "_RequestIdentity",
+    workspace_name: str,
+) -> tuple[AuthorizationRequest, bool]:
+    body = request_context.json_body if isinstance(request_context.json_body, dict) else None
+
+    raw_body_value, body_key = _extract_mapping_field(body, "run_ids", "runIds")
+    if raw_body_value is _MISSING:
+        return request_context, False
+    if raw_body_value is _INVALID or body_key is None:
+        return request_context, False
+
+    body_run_ids = _normalize_strict_request_values(raw_body_value, allow_scalar=False)
+    if body_run_ids is _INVALID:
+        return request_context, False
+    assert isinstance(body_run_ids, list)
+
     readable_body_ids = filter_readable_run_ids(authorizer, identity, workspace_name, body_run_ids)
-    readable_query_ids = filter_readable_run_ids(authorizer, identity, workspace_name, query_run_ids)
-    if not readable_body_ids and not readable_query_ids:
+    if not readable_body_ids:
         return request_context, False
 
-    updated_request_context = request_context
-    if body_has_run_ids and isinstance(request_context.json_body, dict):
-        filtered_body = dict(request_context.json_body)
-        filtered_body["run_ids"] = readable_body_ids
-        updated_request_context = replace(updated_request_context, json_body=filtered_body)
-
-    if query_has_run_ids:
-        filtered_query_params = dict(request_context.query_params)
-        if readable_query_ids:
-            filtered_query_params["run_ids"] = readable_query_ids
-        else:
-            filtered_query_params.pop("run_ids", None)
-        updated_request_context = replace(updated_request_context, query_params=filtered_query_params)
-
-    return updated_request_context, True
+    filtered_body = dict(body)
+    filtered_body[body_key] = readable_body_ids
+    return replace(request_context, json_body=filtered_body), True
 
 
-def _filter_request_trace_locations(
+def _filter_request_run_ids_query_get_body_on_empty_query(
     request_context: AuthorizationRequest,
     authorizer: "KubernetesAuthorizer",
     identity: "_RequestIdentity",
     workspace_name: str,
 ) -> tuple[AuthorizationRequest, bool]:
-    if not isinstance(request_context.json_body, dict):
+    if request_context.method.upper() == "GET" and not request_context.query_params:
+        return _filter_request_run_ids_body(request_context, authorizer, identity, workspace_name)
+    return _filter_request_run_ids_query_run_ids(
+        request_context, authorizer, identity, workspace_name
+    )
+
+
+def _filter_request_run_ids_query(
+    request_context: AuthorizationRequest,
+    authorizer: "KubernetesAuthorizer",
+    identity: "_RequestIdentity",
+    workspace_name: str,
+    *,
+    query_key: str,
+) -> tuple[AuthorizationRequest, bool]:
+    raw_query_value, _ = _extract_mapping_field(request_context.query_params, query_key)
+    if raw_query_value is _MISSING:
         return request_context, False
-    raw_locations = request_context.json_body.get("locations")
+    if raw_query_value is _INVALID:
+        return request_context, False
+
+    query_run_ids = _normalize_strict_request_values(raw_query_value, allow_scalar=True)
+    if query_run_ids is _INVALID:
+        return request_context, False
+    assert isinstance(query_run_ids, list)
+
+    readable_query_ids = filter_readable_run_ids(authorizer, identity, workspace_name, query_run_ids)
+    if not readable_query_ids:
+        return request_context, False
+
+    filtered_query_params = dict(request_context.query_params)
+    filtered_query_params[query_key] = readable_query_ids
+    return replace(request_context, query_params=filtered_query_params), True
+
+
+def _filter_request_run_ids_query_run_ids(
+    request_context: AuthorizationRequest,
+    authorizer: "KubernetesAuthorizer",
+    identity: "_RequestIdentity",
+    workspace_name: str,
+) -> tuple[AuthorizationRequest, bool]:
+    return _filter_request_run_ids_query(
+        request_context,
+        authorizer,
+        identity,
+        workspace_name,
+        query_key="run_ids",
+    )
+
+
+def _filter_request_run_ids_query_run_id(
+    request_context: AuthorizationRequest,
+    authorizer: "KubernetesAuthorizer",
+    identity: "_RequestIdentity",
+    workspace_name: str,
+) -> tuple[AuthorizationRequest, bool]:
+    return _filter_request_run_ids_query(
+        request_context,
+        authorizer,
+        identity,
+        workspace_name,
+        query_key="run_id",
+    )
+
+
+def _filter_request_trace_locations_body(
+    request_context: AuthorizationRequest,
+    authorizer: "KubernetesAuthorizer",
+    identity: "_RequestIdentity",
+    workspace_name: str,
+) -> tuple[AuthorizationRequest, bool]:
+    body = request_context.json_body if isinstance(request_context.json_body, dict) else None
+    if body is None:
+        return request_context, False
+
+    raw_locations, body_key = _extract_mapping_field(body, "locations")
+    if raw_locations is _MISSING:
+        return request_context, False
+    if raw_locations is _INVALID or body_key is None:
+        return request_context, False
     if not isinstance(raw_locations, list):
         return request_context, False
 
     filtered_locations: list[dict[str, object]] = []
     for location in raw_locations:
         if not isinstance(location, dict):
+            return request_context, False
+        has_mlflow_location = _contains_any_key(location, "mlflow_experiment", "mlflowExperiment")
+        has_inference_table = _contains_any_key(location, "inference_table", "inferenceTable")
+        # A single TraceLocation should not try to specify multiple upstream location variants.
+        if has_mlflow_location and has_inference_table:
+            return request_context, False
+        if has_inference_table:
             continue
-        mlflow_location = _first_present_value(location, "mlflow_experiment", "mlflowExperiment")
-        if not isinstance(mlflow_location, dict):
-            continue
-        experiment_id = _normalize_string(
-            _first_present_value(mlflow_location, "experiment_id", "experimentId")
+        mlflow_location, _ = _extract_mapping_field(location, "mlflow_experiment", "mlflowExperiment")
+        if (mlflow_location is _MISSING or mlflow_location is _INVALID) or not isinstance(
+            mlflow_location, dict
+        ):
+            return request_context, False
+        experiment_id_value, _ = _extract_mapping_field(
+            mlflow_location, "experiment_id", "experimentId"
         )
-        if experiment_id is None:
-            continue
+        if experiment_id_value is _MISSING or experiment_id_value is _INVALID:
+            return request_context, False
+        experiment_id = _normalize_strict_request_value(experiment_id_value)
+        if experiment_id is _INVALID:
+            return request_context, False
         if _can_read_experiment_id(authorizer, identity, workspace_name, experiment_id):
             filtered_locations.append(location)
 
     if not filtered_locations:
         return request_context, False
 
-    filtered_body = dict(request_context.json_body)
-    filtered_body["locations"] = filtered_locations
+    filtered_body = dict(body)
+    filtered_body[body_key] = filtered_locations
     return replace(request_context, json_body=filtered_body), True
 
 
@@ -412,16 +509,30 @@ def apply_request_collection_filter(
     when the filter found identifiers in the request and narrowed them to the
     subset the caller is authorized for.
     """
-    if policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS:
-        return _filter_request_experiment_ids(request_context, authorizer, identity, workspace_name)
-    if policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID:
-        return _filter_request_single_experiment_id(
+    if policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY:
+        return _filter_request_experiment_ids_body(
             request_context, authorizer, identity, workspace_name
         )
-    if policy == COLLECTION_POLICY_REQUEST_RUN_IDS:
-        return _filter_request_run_ids(request_context, authorizer, identity, workspace_name)
-    if policy == COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS:
-        return _filter_request_trace_locations(request_context, authorizer, identity, workspace_name)
+    if policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY:
+        return _filter_request_single_experiment_id_body(
+            request_context, authorizer, identity, workspace_name
+        )
+    if policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST:
+        return _filter_request_single_experiment_id_query_get_body_post(
+            request_context, authorizer, identity, workspace_name
+        )
+    if policy == COLLECTION_POLICY_REQUEST_RUN_ID_QUERY:
+        return _filter_request_run_ids_query_run_id(
+            request_context, authorizer, identity, workspace_name
+        )
+    if policy == COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY:
+        return _filter_request_run_ids_query_get_body_on_empty_query(
+            request_context, authorizer, identity, workspace_name
+        )
+    if policy == COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS_BODY:
+        return _filter_request_trace_locations_body(
+            request_context, authorizer, identity, workspace_name
+        )
     return request_context, False
 
 
@@ -674,10 +785,12 @@ def filter_graphql_model_versions_result(
 __all__ = [
     "COLLECTION_POLICY_BROAD_ONLY",
     "COLLECTION_POLICY_GRAPHQL_FILTER",
-    "COLLECTION_POLICY_REQUEST_EXPERIMENT_ID",
-    "COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS",
-    "COLLECTION_POLICY_REQUEST_RUN_IDS",
-    "COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS",
+    "COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY",
+    "COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST",
+    "COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY",
+    "COLLECTION_POLICY_REQUEST_RUN_ID_QUERY",
+    "COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY",
+    "COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS_BODY",
     "COLLECTION_POLICY_RESPONSE_DATASET_SUMMARIES",
     "COLLECTION_POLICY_RESPONSE_EXPERIMENTS",
     "COLLECTION_POLICY_RESPONSE_MODEL_VERSIONS",
