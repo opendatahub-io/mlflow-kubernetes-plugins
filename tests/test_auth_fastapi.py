@@ -24,6 +24,8 @@ from mlflow_kubernetes_plugins.auth.authorizer import (
     KubernetesAuthorizer,
 )
 from mlflow_kubernetes_plugins.auth.collection_filters import (
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
+    COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
     COLLECTION_POLICY_RESPONSE_EXPERIMENTS,
 )
 from mlflow_kubernetes_plugins.auth.compiler import _validate_fastapi_route_authorization
@@ -870,7 +872,7 @@ def test_fastapi_filters_mounted_flask_workspace_lists(
     assert response.json()["workspaces"] == [{"name": "team-a"}]
 
 
-def test_fastapi_rewrites_experiment_id_sources_for_mounted_flask_app(
+def test_fastapi_ignores_query_experiment_ids_for_body_policy_on_mounted_flask_app(
     mock_authorizer, mock_config, monkeypatch
 ) -> None:
     flask_app = Flask(__name__)
@@ -916,7 +918,7 @@ def test_fastapi_rewrites_experiment_id_sources_for_mounted_flask_app(
             AuthorizationRule(
                 "list",
                 resource="experiments",
-                collection_policy="request_filter_experiment_ids",
+                collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
             )
         ],
     )
@@ -930,10 +932,10 @@ def test_fastapi_rewrites_experiment_id_sources_for_mounted_flask_app(
 
     assert response.status_code == 200
     assert response.json()["json_body"] == {"experiment_ids": ["body-allowed"]}
-    assert response.json()["query_ids"] == []
+    assert response.json()["query_ids"] == ["query-denied"]
 
 
-def test_fastapi_rewrites_native_query_params_and_clears_request_cache(
+def test_fastapi_rewrites_query_run_ids_and_clears_request_cache(
     mock_authorizer, mock_config, monkeypatch
 ) -> None:
     app = FastAPI()
@@ -946,10 +948,10 @@ def test_fastapi_rewrites_native_query_params_and_clears_request_cache(
             finally:
                 workspace_context.clear_server_request_workspace()
 
-    @app.post("/api/2.0/mlflow/runs/search")
-    async def search_runs(request: Request):
+    @app.get("/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval")
+    async def get_metric_history_bulk_interval(request: Request):
         return {
-            "query_ids": request.query_params.getlist("experiment_ids"),
+            "query_ids": request.query_params.getlist("run_ids"),
         }
 
     app.add_middleware(
@@ -963,11 +965,11 @@ def test_fastapi_rewrites_native_query_params_and_clears_request_cache(
         lambda *args, **kwargs: kwargs.get("resource_name") == "exp-allowed"
     )
     monkeypatch.setattr(
-        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
-        lambda experiment_id: {
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_run_id",
+        lambda run_id: {
             "allowed": "exp-allowed",
             "denied": "exp-denied",
-        }[experiment_id],
+        }[run_id],
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -975,15 +977,15 @@ def test_fastapi_rewrites_native_query_params_and_clears_request_cache(
             AuthorizationRule(
                 "list",
                 resource="experiments",
-                collection_policy="request_filter_experiment_ids",
+                collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
             )
         ],
     )
 
     client = TestClient(app)
-    response = client.post(
-        "/api/2.0/mlflow/runs/search",
-        params={"experiment_ids": ["allowed", "denied"]},
+    response = client.get(
+        "/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval",
+        params={"run_ids": ["allowed", "denied"], "metric_key": "loss"},
         headers={"Authorization": "Bearer valid-token"},
     )
 

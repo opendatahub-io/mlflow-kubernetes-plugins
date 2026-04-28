@@ -86,11 +86,15 @@ from mlflow_kubernetes_plugins.auth.authorizer import (
     _CacheEntry,
 )
 from mlflow_kubernetes_plugins.auth.collection_filters import (
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
-    COLLECTION_POLICY_REQUEST_RUN_IDS,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
+    COLLECTION_POLICY_REQUEST_RUN_ID_QUERY,
+    COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
     COLLECTION_POLICY_RESPONSE_EXPERIMENTS,
     COLLECTION_POLICY_RESPONSE_TRACES,
+    _filter_request_run_ids_query_run_ids,
+    _filter_request_trace_locations_body,
     apply_request_collection_filter,
     apply_response_collection_filters,
 )
@@ -1985,7 +1989,7 @@ def test_authorize_request_denies_when_resource_name_lookup_fails(monkeypatch):
     assert authorizer.is_allowed.call_count == 1
 
 
-def test_authorize_request_prefilters_experiment_ids_after_broad_denial(monkeypatch):
+def test_authorize_request_prefilters_body_experiment_ids_after_broad_denial(monkeypatch):
     authorizer = Mock()
 
     def _is_allowed(identity, resource, verb, namespace, subresource=None, resource_name=None):
@@ -1997,7 +2001,7 @@ def test_authorize_request_prefilters_experiment_ids_after_broad_denial(monkeypa
     rule = AuthorizationRule(
         "list",
         resource=RESOURCE_EXPERIMENTS,
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -2030,7 +2034,9 @@ def test_authorize_request_prefilters_experiment_ids_after_broad_denial(monkeypa
     assert result.request_context.json_body == {"experiment_ids": ["1"], "filter": ""}
 
 
-def test_apply_request_collection_filter_keeps_experiment_id_sources_separate(monkeypatch):
+def test_apply_request_collection_filter_ignores_query_experiment_ids_for_body_policy(
+    monkeypatch,
+):
     authorizer = Mock()
     authorizer.is_allowed.side_effect = (
         lambda *args, **kwargs: kwargs.get("resource_name") == "exp-body"
@@ -2055,7 +2061,7 @@ def test_apply_request_collection_filter_keeps_experiment_id_sources_separate(mo
             query_params={"experiment_ids": ["query-denied"]},
             json_body={"experiment_ids": ["body-allowed"]},
         ),
-        COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
         authorizer=authorizer,
         identity=_RequestIdentity(token="token"),
         workspace_name="team-a",
@@ -2063,10 +2069,10 @@ def test_apply_request_collection_filter_keeps_experiment_id_sources_separate(mo
 
     assert allowed is True
     assert updated_request_context.json_body == {"experiment_ids": ["body-allowed"]}
-    assert updated_request_context.query_params == {}
+    assert updated_request_context.query_params == {"experiment_ids": ["query-denied"]}
 
 
-def test_apply_request_collection_filter_denies_single_experiment_id_when_query_source_denied(
+def test_apply_request_collection_filter_ignores_query_experiment_id_for_body_policy(
     monkeypatch,
 ):
     authorizer = Mock()
@@ -2081,7 +2087,7 @@ def test_apply_request_collection_filter_denies_single_experiment_id_when_query_
         }[experiment_id],
     )
 
-    _, allowed = apply_request_collection_filter(
+    updated_request_context, allowed = apply_request_collection_filter(
         AuthorizationRequest(
             authorization_header="Bearer filter-token",
             forwarded_access_token=None,
@@ -2093,16 +2099,17 @@ def test_apply_request_collection_filter_denies_single_experiment_id_when_query_
             query_params={"experiment_id": "query-denied"},
             json_body={"experiment_id": "body-allowed"},
         ),
-        COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+        COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
         authorizer=authorizer,
         identity=_RequestIdentity(token="token"),
         workspace_name="team-a",
     )
 
-    assert allowed is False
+    assert allowed is True
+    assert updated_request_context.query_params == {"experiment_id": "query-denied"}
 
 
-def test_authorize_request_prefilters_run_ids_after_broad_denial(monkeypatch):
+def test_authorize_request_prefilters_query_run_id_after_broad_denial(monkeypatch):
     authorizer = Mock()
     authorizer.is_allowed.side_effect = (
         lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
@@ -2110,7 +2117,7 @@ def test_authorize_request_prefilters_run_ids_after_broad_denial(monkeypatch):
     rule = AuthorizationRule(
         "list",
         resource=RESOURCE_EXPERIMENTS,
-        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_ID_QUERY,
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -2134,19 +2141,21 @@ def test_authorize_request_prefilters_run_ids_after_broad_denial(monkeypatch):
             path="/ajax-api/2.0/mlflow/metrics/get-history-bulk",
             method="GET",
             workspace="team-a",
-            query_params={"run_ids": ["run-1", "run-2"], "metric_key": "loss"},
+            query_params={"run_id": ["run-1", "run-2"], "metric_key": "loss"},
         ),
         authorizer=authorizer,
         config_values=KubernetesAuthConfig(),
     )
 
     assert result.request_context.query_params == {
-        "run_ids": ["run-1"],
+        "run_id": ["run-1"],
         "metric_key": "loss",
     }
 
 
-def test_apply_request_collection_filter_keeps_run_id_sources_separate(monkeypatch):
+def test_apply_request_collection_filter_ignores_body_run_ids_for_query_policy(
+    monkeypatch,
+):
     authorizer = Mock()
     authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") in {
         "exp-body",
@@ -2162,7 +2171,7 @@ def test_apply_request_collection_filter_keeps_run_id_sources_separate(monkeypat
         }[run_id],
     )
 
-    updated_request_context, allowed = apply_request_collection_filter(
+    updated_request_context, allowed = _filter_request_run_ids_query_run_ids(
         AuthorizationRequest(
             authorization_header="Bearer filter-token",
             forwarded_access_token=None,
@@ -2177,28 +2186,66 @@ def test_apply_request_collection_filter_keeps_run_id_sources_separate(monkeypat
             },
             json_body={"run_ids": ["run-body-allowed", "run-body-denied"]},
         ),
-        COLLECTION_POLICY_REQUEST_RUN_IDS,
-        authorizer=authorizer,
-        identity=_RequestIdentity(token="token"),
-        workspace_name="team-a",
+        authorizer,
+        _RequestIdentity(token="token"),
+        "team-a",
     )
 
     assert allowed is True
-    assert updated_request_context.json_body == {"run_ids": ["run-body-allowed"]}
+    assert updated_request_context.json_body == {"run_ids": ["run-body-allowed", "run-body-denied"]}
     assert updated_request_context.query_params == {
         "run_ids": ["run-query-allowed"],
         "metric_key": "loss",
     }
 
 
-def test_authorize_request_denies_when_all_run_ids_are_filtered(monkeypatch):
+def test_apply_request_collection_filter_filters_query_run_ids_happy_path(monkeypatch):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") in {
+        "exp-query",
+    }
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_run_id",
+        lambda run_id: {
+            "run-query-allowed": "exp-query",
+            "run-query-denied": "exp-denied",
+        }[run_id],
+    )
+
+    updated_request_context, allowed = _filter_request_run_ids_query_run_ids(
+        AuthorizationRequest(
+            authorization_header="Bearer filter-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/metric-history",
+            method="GET",
+            workspace="team-a",
+            query_params={
+                "run_ids": ["run-query-allowed", "run-query-denied"],
+                "metric_key": "loss",
+            },
+        ),
+        authorizer,
+        _RequestIdentity(token="token"),
+        "team-a",
+    )
+
+    assert allowed is True
+    assert updated_request_context.query_params == {
+        "run_ids": ["run-query-allowed"],
+        "metric_key": "loss",
+    }
+
+
+def test_authorize_request_denies_when_all_query_run_ids_are_filtered(monkeypatch):
     app = Flask(__name__)
     authorizer = Mock()
     authorizer.is_allowed.return_value = False
     rule = AuthorizationRule(
         "list",
         resource=RESOURCE_EXPERIMENTS,
-        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_ID_QUERY,
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -2214,7 +2261,7 @@ def test_authorize_request_denies_when_all_run_ids_are_filtered(monkeypatch):
     )
 
     with app.test_request_context(
-        "/ajax-api/2.0/mlflow/metrics/get-history-bulk?run_ids=run-1&metric_key=loss",
+        "/ajax-api/2.0/mlflow/metrics/get-history-bulk?run_id=run-1&metric_key=loss",
         method="GET",
     ):
         with pytest.raises(MlflowException, match="Permission denied") as exc:
@@ -2227,7 +2274,7 @@ def test_authorize_request_denies_when_all_run_ids_are_filtered(monkeypatch):
                     path="/ajax-api/2.0/mlflow/metrics/get-history-bulk",
                     method="GET",
                     workspace="team-a",
-                    query_params={"run_ids": ["run-1"], "metric_key": "loss"},
+                    query_params={"run_id": ["run-1"], "metric_key": "loss"},
                 ),
                 authorizer=authorizer,
                 config_values=KubernetesAuthConfig(),
@@ -2236,13 +2283,97 @@ def test_authorize_request_denies_when_all_run_ids_are_filtered(monkeypatch):
     assert exc.value.error_code == databricks_pb2.ErrorCode.Name(databricks_pb2.PERMISSION_DENIED)
 
 
-def test_authorize_request_allows_single_experiment_collection_after_broad_denial(monkeypatch):
+def test_authorize_request_allows_body_experiment_id_collection_after_broad_denial(monkeypatch):
     authorizer = Mock()
     authorizer.is_allowed.side_effect = [False, True]
     rule = AuthorizationRule(
         "list",
         resource=RESOURCE_EXPERIMENTS,
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
+        lambda experiment_id: "exp-a",
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer filter-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/ajax-api/3.0/jobs/search",
+            method="POST",
+            workspace="team-a",
+            json_body={"experiment_id": "1"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    second_call = authorizer.is_allowed.call_args_list[1]
+    assert second_call.kwargs == {"resource_name": "exp-a"}
+
+
+def test_authorize_request_allows_prompt_optimization_post_body_experiment_id_after_broad_denial(
+    monkeypatch,
+):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [False, True]
+    rule = AuthorizationRule(
+        "list",
+        resource=RESOURCE_EXPERIMENTS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
+        lambda experiment_id: "exp-a",
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer filter-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/prompt-optimization/jobs/search",
+            method="POST",
+            workspace="team-a",
+            json_body={"experiment_id": "1"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    second_call = authorizer.is_allowed.call_args_list[1]
+    assert second_call.kwargs == {"resource_name": "exp-a"}
+
+
+def test_authorize_request_allows_prompt_optimization_get_query_experiment_id_after_broad_denial(
+    monkeypatch,
+):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [False, True]
+    rule = AuthorizationRule(
+        "list",
+        resource=RESOURCE_EXPERIMENTS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -2274,6 +2405,124 @@ def test_authorize_request_allows_single_experiment_collection_after_broad_denia
 
     second_call = authorizer.is_allowed.call_args_list[1]
     assert second_call.kwargs == {"resource_name": "exp-a"}
+
+
+def test_authorize_request_allows_prompt_optimization_get_body_experiment_id_without_query(
+    monkeypatch,
+):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [False, True]
+    rule = AuthorizationRule(
+        "list",
+        resource=RESOURCE_EXPERIMENTS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
+        lambda experiment_id: "exp-a",
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer filter-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/prompt-optimization/jobs/search",
+            method="GET",
+            workspace="team-a",
+            json_body={"experiment_id": "1"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    second_call = authorizer.is_allowed.call_args_list[1]
+    assert second_call.kwargs == {"resource_name": "exp-a"}
+
+
+def test_apply_request_collection_filter_ignores_query_experiment_id_for_prompt_optimization_post(
+    monkeypatch,
+):
+    authorizer = Mock()
+    authorizer.is_allowed.return_value = True
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
+        lambda experiment_id: "exp-a",
+    )
+
+    updated_request_context, allowed = apply_request_collection_filter(
+        AuthorizationRequest(
+            authorization_header="Bearer filter-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/prompt-optimization/jobs/search",
+            method="POST",
+            workspace="team-a",
+            query_params={"experiment_id": "1"},
+            json_body={"experiment_id": "1"},
+        ),
+        COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
+        authorizer=authorizer,
+        identity=_RequestIdentity(token="token"),
+        workspace_name="team-a",
+    )
+
+    assert allowed is True
+    assert updated_request_context.query_params == {"experiment_id": "1"}
+
+
+def test_authorize_request_allows_bulk_interval_get_body_run_ids_without_query(monkeypatch):
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = (
+        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    )
+    rule = AuthorizationRule(
+        "list",
+        resource=RESOURCE_EXPERIMENTS,
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: [rule],
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_run_id",
+        lambda run_id: {"run-1": "exp-a", "run-2": "exp-b"}[run_id],
+    )
+
+    result = _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer filter-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval",
+            method="GET",
+            workspace="team-a",
+            json_body={"run_ids": ["run-1", "run-2"], "metric_key": "loss"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    assert result.request_context.json_body == {
+        "run_ids": ["run-1"],
+        "metric_key": "loss",
+    }
 
 
 def test_authorize_request_retries_with_resource_name_for_start_trace_v3(monkeypatch):
@@ -2530,7 +2779,7 @@ def test_mlflow_311_request_authorization_rules_cover_new_endpoints():
     )
     assert (
         REQUEST_AUTHORIZATION_RULES[SearchIssues].collection_policy
-        == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID
+        == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY
     )
     assert REQUEST_AUTHORIZATION_RULES[GetPresignedDownloadUrl].resource_name_parsers == (
         RESOURCE_NAME_PARSER_ARTIFACT_EXPERIMENT_ID_TO_NAME,
@@ -2986,16 +3235,23 @@ def test_authorize_request_rejects_non_mapping_budget_body(monkeypatch):
     authorizer.is_allowed.assert_not_called()
 
 
-def test_metric_history_bulk_rules_use_run_id_request_filter():
+def test_metric_history_bulk_rules_use_exact_query_key_request_filters():
     request_rule = REQUEST_AUTHORIZATION_RULES[GetMetricHistoryBulkInterval]
-    assert request_rule.collection_policy == COLLECTION_POLICY_REQUEST_RUN_IDS
+    assert (
+        request_rule.collection_policy
+        == COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY
+    )
 
-    for path in (
-        "/ajax-api/2.0/mlflow/metrics/get-history-bulk",
-        "/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval",
-    ):
-        path_rule = PATH_AUTHORIZATION_RULES[(path, "GET")]
-        assert path_rule.collection_policy == COLLECTION_POLICY_REQUEST_RUN_IDS
+    assert (
+        PATH_AUTHORIZATION_RULES[("/ajax-api/2.0/mlflow/metrics/get-history-bulk", "GET")].collection_policy
+        == COLLECTION_POLICY_REQUEST_RUN_ID_QUERY
+    )
+    assert (
+        PATH_AUTHORIZATION_RULES[
+            ("/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval", "GET")
+        ].collection_policy
+        == COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY
+    )
 
 
 def test_server_info_endpoints_are_unprotected():
@@ -3376,7 +3632,9 @@ def test_apply_response_collection_filters_enforceable_when_key_absent():
     assert enforceable is True
 
 
-def test_apply_request_collection_filter_trace_locations(monkeypatch):
+def test_apply_request_collection_filter_trace_locations_use_body_mlflow_experiments_only(
+    monkeypatch,
+):
     authorizer = Mock()
     authorizer.is_allowed.side_effect = (
         lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
@@ -3385,8 +3643,6 @@ def test_apply_request_collection_filter_trace_locations(monkeypatch):
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
         lambda eid: {"1": "exp-a", "2": "exp-b"}[eid],
     )
-
-    from mlflow_kubernetes_plugins.auth.collection_filters import _filter_request_trace_locations
 
     request_context = AuthorizationRequest(
         authorization_header=None,
@@ -3404,7 +3660,44 @@ def test_apply_request_collection_filter_trace_locations(monkeypatch):
         },
     )
 
-    updated, allowed = _filter_request_trace_locations(
+    updated, allowed = _filter_request_trace_locations_body(
+        request_context,
+        authorizer,
+        _RequestIdentity(token="token"),
+        "team-a",
+    )
+
+    assert allowed is True
+    assert updated.json_body["locations"] == [{"mlflow_experiment": {"experiment_id": "1"}}]
+
+
+def test_apply_request_collection_filter_ignores_non_mlflow_trace_locations(
+    monkeypatch,
+):
+    authorizer = Mock()
+    authorizer.is_allowed.return_value = True
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
+        lambda eid: "exp-a",
+    )
+
+    request_context = AuthorizationRequest(
+        authorization_header=None,
+        forwarded_access_token=None,
+        remote_user_header_value=None,
+        remote_groups_header_value=None,
+        path="/api/3.0/mlflow/traces/search",
+        method="POST",
+        workspace="team-a",
+        json_body={
+            "locations": [
+                {"mlflow_experiment": {"experiment_id": "1"}},
+                {"inference_table": {"full_table_name": "catalog.schema.table"}},
+            ]
+        },
+    )
+
+    updated, allowed = _filter_request_trace_locations_body(
         request_context,
         authorizer,
         _RequestIdentity(token="token"),
@@ -3588,7 +3881,12 @@ def test_jobs_search_effective_compiled_rule_uses_experiment_filter():
         rules = _find_authorization_rules(path, "POST")
         assert rules is not None, f"No rule found for {path}"
         assert len(rules) == 1
-        assert rules[0].collection_policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID
+        assert rules[0].collection_policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY
+
+
+def test_prompt_optimization_jobs_rule_uses_get_query_post_body_experiment_filter():
+    rule = REQUEST_AUTHORIZATION_RULES[SearchPromptOptimizationJobs]
+    assert rule.collection_policy == COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST
 
 
 def test_generic_job_routes_do_not_attach_resource_name_parsers():
