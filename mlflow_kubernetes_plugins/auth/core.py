@@ -361,6 +361,9 @@ async def _enforce_gateway_dependency_permissions(
     if not workspace_name:
         return request_context
 
+    if rule.skip_gateway_dependency_permissions:
+        return request_context
+
     updated_request_context = request_context
 
     # Gateway endpoints require USE permission on model definitions.
@@ -369,10 +372,6 @@ async def _enforce_gateway_dependency_permissions(
         and rule.subresource != "use"
         and rule.verb in ("create", "update")
     ):
-        if authorizer.is_allowed(
-            identity, RESOURCE_GATEWAY_MODEL_DEFINITIONS, "create", workspace_name, "use"
-        ):
-            return updated_request_context
         try:
             dependency_names = resolve_gateway_model_definition_names_for_use(updated_request_context)
         except ResourceNameResolutionError:
@@ -385,10 +384,21 @@ async def _enforce_gateway_dependency_permissions(
                 )
             except ResourceNameResolutionError:
                 dependency_names = ()
-        if not dependency_names and rule.verb == "update":
+        if (
+            not dependency_names
+            and rule.verb == "update"
+            and _should_resolve_existing_gateway_model_definitions_for_use(updated_request_context)
+        ):
             dependency_names = _resolve_existing_gateway_model_definition_names_for_use(
                 updated_request_context
             )
+        requires_dependency_use = rule.verb == "create" or bool(dependency_names)
+        if not requires_dependency_use and rule.verb == "update":
+            return updated_request_context
+        if authorizer.is_allowed(
+            identity, RESOURCE_GATEWAY_MODEL_DEFINITIONS, "create", workspace_name, "use"
+        ):
+            return updated_request_context
         if dependency_names and all(
             authorizer.is_allowed(
                 identity,
@@ -486,6 +496,13 @@ def _resolve_existing_gateway_model_definition_names_for_use(
         if isinstance(name, str) and (normalized := name.strip()):
             dependency_names.append(normalized)
     return tuple(dict.fromkeys(dependency_names))
+
+
+def _should_resolve_existing_gateway_model_definitions_for_use(
+    request_context: AuthorizationRequest,
+) -> bool:
+    """Only fall back to stored endpoint mappings for full endpoint update requests."""
+    return request_context.path == "/api/2.0/mlflow/gateway/endpoints/update"
 
 
 def _resolve_existing_gateway_secret_names_for_use(

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from mlflow_kubernetes_plugins.auth._compat import HAS_MLFLOW_3_11_AUTH_SURFACE
+from mlflow_kubernetes_plugins.auth._compat import (
+    HAS_MLFLOW_3_11_AUTH_SURFACE,
+    HAS_MLFLOW_3_12_AUTH_SURFACE,
+)
 from mlflow_kubernetes_plugins.auth.constants import (
     ALLOWED_RESOURCES,
     RESOURCE_ASSISTANTS,
@@ -12,6 +15,7 @@ from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_EXPERIMENTS,
     RESOURCE_GATEWAY_BUDGETS,
     RESOURCE_GATEWAY_ENDPOINTS,
+    RESOURCE_GATEWAY_GUARDRAILS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
     RESOURCE_REGISTERED_MODELS,
@@ -32,6 +36,9 @@ class AuthorizationRule(NamedTuple):
     workspace_access_check: bool = False
     deny_message: str | None = None
     allow_if_resource_reference_missing: bool = False
+    # Skip generic gateway dependency checks when a rule reuses a gateway resource for
+    # authorization shape but does not actually consume that resource's usual dependencies.
+    skip_gateway_dependency_permissions: bool = False
 
 
 def _assistants_rule(verb: str | None, **kwargs) -> AuthorizationRule:
@@ -64,6 +71,10 @@ def _gateway_endpoints_rule(verb: str | None, **kwargs) -> AuthorizationRule:
 
 def _gateway_budgets_rule(verb: str | None, **kwargs) -> AuthorizationRule:
     return AuthorizationRule(verb, resource=RESOURCE_GATEWAY_BUDGETS, **kwargs)
+
+
+def _gateway_guardrails_rule(verb: str | None, **kwargs) -> AuthorizationRule:
+    return AuthorizationRule(verb, resource=RESOURCE_GATEWAY_GUARDRAILS, **kwargs)
 
 
 def _gateway_endpoints_use_rule(**kwargs) -> AuthorizationRule:
@@ -103,6 +114,7 @@ from mlflow_kubernetes_plugins.auth.rules_base import (  # noqa: E402
     BASE_REQUEST_AUTHORIZATION_RULES,
 )
 from mlflow_kubernetes_plugins.auth.rules_v3_11 import apply_v3_11_deltas  # noqa: E402
+from mlflow_kubernetes_plugins.auth.rules_v3_12 import apply_v3_12_deltas  # noqa: E402
 
 REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[AuthorizationRule, ...]] = dict(
     BASE_REQUEST_AUTHORIZATION_RULES
@@ -113,6 +125,11 @@ PATH_AUTHORIZATION_RULES: dict[
 
 if HAS_MLFLOW_3_11_AUTH_SURFACE:
     apply_v3_11_deltas(
+        request_authorization_rules=REQUEST_AUTHORIZATION_RULES,
+        path_authorization_rules=PATH_AUTHORIZATION_RULES,
+    )
+if HAS_MLFLOW_3_12_AUTH_SURFACE:
+    apply_v3_12_deltas(
         request_authorization_rules=REQUEST_AUTHORIZATION_RULES,
         path_authorization_rules=PATH_AUTHORIZATION_RULES,
     )

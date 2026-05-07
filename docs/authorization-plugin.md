@@ -88,7 +88,13 @@ curl \
 - GraphQL and FastAPI routes are covered in addition to the classic Flask endpoints
 - GraphQL collection fields use server-side filtering, while single-object GraphQL reads keep explicit request-time authorization
 - gateway resource access uses `use` subresources for fine-grained RBAC checks
+- gateway guardrails use the dedicated `gatewayguardrails` resource but remain workspace-scoped
+  rather than `resourceName`-scoped because upstream guardrail names are not unique within a
+  workspace
 - gateway budget policies use the dedicated `gatewaybudgets` resource, remain workspace-scoped rather than `resourceName`-scoped, and reject `GLOBAL` target scope
+- guardrail creation currently does not independently re-authorize the referenced scorer. A caller
+  allowed to manage guardrails can reuse an existing scorer reference, similar to controller-style
+  `secretRef` patterns where the reconciler consumes a referenced object on the caller's behalf
 - startup validation fails if a new protected GraphQL field is added without explicit authorization policy coverage
 
 For the Kubernetes permissions required by the server and callers, see [`kubernetes-rbac.md`](kubernetes-rbac.md).

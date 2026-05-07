@@ -11,6 +11,7 @@ from packaging.version import Version
 
 MLFLOW_VERSION = Version(mlflow.__version__)
 HAS_MLFLOW_3_11_AUTH_SURFACE = MLFLOW_VERSION >= Version("3.11.0.dev0")
+HAS_MLFLOW_3_12_AUTH_SURFACE = MLFLOW_VERSION >= Version("3.12.0.dev0")
 
 if HAS_MLFLOW_3_11_AUTH_SURFACE:
     GetPresignedDownloadUrl = artifacts_pb2.GetPresignedDownloadUrl
@@ -39,19 +40,50 @@ else:  # pragma: no cover - exercised via MLflow version matrix
     ListGatewayBudgetWindows = None
     UpdateGatewayBudgetPolicy = None
 
+if HAS_MLFLOW_3_12_AUTH_SURFACE:
+    CreatePresignedUploadUrl = service_pb2_mod.CreatePresignedUploadUrl
+    CreateGatewayGuardrail = service_pb2_mod.CreateGatewayGuardrail
+    GetGatewayGuardrail = service_pb2_mod.GetGatewayGuardrail
+    DeleteGatewayGuardrail = service_pb2_mod.DeleteGatewayGuardrail
+    ListGatewayGuardrails = service_pb2_mod.ListGatewayGuardrails
+    AddGuardrailToEndpoint = service_pb2_mod.AddGuardrailToEndpoint
+    RemoveGuardrailFromEndpoint = service_pb2_mod.RemoveGuardrailFromEndpoint
+    ListEndpointGuardrailConfigs = service_pb2_mod.ListEndpointGuardrailConfigs
+    UpdateEndpointGuardrailConfig = service_pb2_mod.UpdateEndpointGuardrailConfig
+else:  # pragma: no cover - exercised via MLflow version matrix
+    CreatePresignedUploadUrl = None
+    CreateGatewayGuardrail = None
+    GetGatewayGuardrail = None
+    DeleteGatewayGuardrail = None
+    ListGatewayGuardrails = None
+    AddGuardrailToEndpoint = None
+    RemoveGuardrailFromEndpoint = None
+    ListEndpointGuardrailConfigs = None
+    UpdateEndpointGuardrailConfig = None
+
 __all__ = [
+    "AddGuardrailToEndpoint",
     "BatchGetTraceInfos",
+    "CreateGatewayGuardrail",
     "CreateGatewayBudgetPolicy",
     "CreateIssue",
+    "CreatePresignedUploadUrl",
+    "DeleteGatewayGuardrail",
     "DeleteGatewayBudgetPolicy",
+    "GetGatewayGuardrail",
     "GetGatewayBudgetPolicy",
     "GetIssue",
     "GetPresignedDownloadUrl",
     "HAS_MLFLOW_3_11_AUTH_SURFACE",
+    "HAS_MLFLOW_3_12_AUTH_SURFACE",
+    "ListEndpointGuardrailConfigs",
+    "ListGatewayGuardrails",
     "ListGatewayBudgetPolicies",
     "ListGatewayBudgetWindows",
     "MLFLOW_VERSION",
+    "RemoveGuardrailFromEndpoint",
     "SearchIssues",
+    "UpdateEndpointGuardrailConfig",
     "UpdateGatewayBudgetPolicy",
     "UpdateIssue",
 ]
