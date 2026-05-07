@@ -26,6 +26,7 @@ The authorization plugin checks access against resources in the `mlflow.kubeflow
 | `gatewaysecrets/use` | `create` |
 | `gatewayendpoints` | `get`, `list`, `create`, `update`, `delete` |
 | `gatewayendpoints/use` | `create` |
+| `gatewayguardrails` | `get`, `list`, `create`, `update`, `delete` |
 | `gatewaybudgets` | `get`, `list`, `create`, `update`, `delete` |
 | `gatewaymodeldefinitions` | `get`, `list`, `create`, `update`, `delete` |
 | `gatewaymodeldefinitions/use` | `create` |
@@ -48,6 +49,9 @@ Important details:
 - For `gatewaysecrets`, the `resourceName` is the gateway secret name
 - For `gatewayendpoints`, the `resourceName` is the gateway endpoint name
 - For `gatewaymodeldefinitions`, the `resourceName` is the gateway model definition name
+- `gatewayguardrails` intentionally does not support `resourceNames`. MLflow guardrail names are
+  not unique within a workspace, so name-scoped RBAC would be ambiguous and could accidentally
+  authorize multiple guardrails that share the same display name.
 - `gatewaybudgets` intentionally does not support `resourceNames`. MLflow exposes only opaque
   budget-policy IDs rather than a declarative unique name that can be pre-provisioned through
   GitOps-friendly RBAC, so budget authorization stays at the workspace level.

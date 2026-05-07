@@ -44,6 +44,9 @@ RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME = "gateway_endpoint_id_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME = "gateway_endpoint_selector_to_name"
 RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME = "gateway_proxy_endpoint_name"
 RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME = "optional_gateway_endpoint_name"
+RESOURCE_NAME_PARSER_OPTIONAL_ACTION_ENDPOINT_ID_TO_NAME = (
+    "optional_action_endpoint_id_to_name"
+)
 RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME = "gateway_model_definition_id_to_name"
 RESOURCE_NAME_PARSER_GRAPHQL_EXPERIMENT_ID_TO_NAME = "graphql_experiment_id_to_name"
 RESOURCE_NAME_PARSER_GRAPHQL_RUN_ID_TO_EXPERIMENT_NAME = "graphql_run_id_to_experiment_name"
@@ -647,6 +650,17 @@ def _parse_optional_gateway_endpoint_name(
     return (endpoint_name,)
 
 
+def _parse_optional_action_endpoint_id_to_name(
+    request_context: AuthorizationRequest,
+) -> tuple[str, ...]:
+    action_endpoint_id = _get_optional_request_param(request_context, "action_endpoint_id")
+    if action_endpoint_id is None:
+        raise ResourceReferenceNotPresentError(
+            "Request did not reference an action endpoint."
+        )
+    return (_resolve_gateway_endpoint_name_from_endpoint_id(action_endpoint_id),)
+
+
 def _parse_gateway_proxy_endpoint_name(request_context: AuthorizationRequest) -> tuple[str, ...]:
     if path_endpoint_name := _get_optional_request_param(request_context, "endpoint_name"):
         return (path_endpoint_name,)
@@ -855,6 +869,9 @@ RESOURCE_NAME_PARSERS: dict[str, "Callable[[AuthorizationRequest], tuple[str, ..
     ),
     RESOURCE_NAME_PARSER_GATEWAY_PROXY_ENDPOINT_NAME: _parse_gateway_proxy_endpoint_name,
     RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME: _parse_optional_gateway_endpoint_name,
+    RESOURCE_NAME_PARSER_OPTIONAL_ACTION_ENDPOINT_ID_TO_NAME: (
+        _parse_optional_action_endpoint_id_to_name
+    ),
     RESOURCE_NAME_PARSER_GATEWAY_MODEL_DEFINITION_ID_TO_NAME: (
         _parse_gateway_model_definition_id_to_name
     ),
@@ -945,6 +962,7 @@ __all__ = [
     "RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME",
     "RESOURCE_NAME_PARSER_NEW_REGISTERED_MODEL_NAME",
     "RESOURCE_NAME_PARSER_OTEL_EXPERIMENT_ID_HEADER_TO_NAME",
+    "RESOURCE_NAME_PARSER_OPTIONAL_ACTION_ENDPOINT_ID_TO_NAME",
     "RESOURCE_NAME_PARSER_REGISTERED_MODEL_NAME",
     "RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME",
     "RESOURCE_NAME_PARSER_TRACE_ID_TO_EXPERIMENT_NAME",

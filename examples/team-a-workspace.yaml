@@ -45,6 +45,7 @@ rules:
       - registeredmodels
       - gatewaysecrets
       - gatewayendpoints
+      - gatewayguardrails
       - gatewaymodeldefinitions
     verbs:
       - get

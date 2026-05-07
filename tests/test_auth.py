@@ -64,16 +64,25 @@ from mlflow.protos.service_pb2 import (
 from mlflow.protos.webhooks_pb2 import DeleteWebhook, GetWebhook, UpdateWebhook
 from mlflow.server.handlers import STATIC_PREFIX_ENV_VAR
 from mlflow_kubernetes_plugins.auth._compat import (
+    AddGuardrailToEndpoint,
     BatchGetTraceInfos,
     CreateGatewayBudgetPolicy,
+    CreateGatewayGuardrail,
     CreateIssue,
+    CreatePresignedUploadUrl,
     DeleteGatewayBudgetPolicy,
+    DeleteGatewayGuardrail,
     GetGatewayBudgetPolicy,
+    GetGatewayGuardrail,
     GetIssue,
     GetPresignedDownloadUrl,
+    ListEndpointGuardrailConfigs,
     ListGatewayBudgetPolicies,
     ListGatewayBudgetWindows,
+    ListGatewayGuardrails,
+    RemoveGuardrailFromEndpoint,
     SearchIssues,
+    UpdateEndpointGuardrailConfig,
     UpdateGatewayBudgetPolicy,
     UpdateIssue,
 )
@@ -109,6 +118,7 @@ from mlflow_kubernetes_plugins.auth.constants import (
     RESOURCE_EXPERIMENTS,
     RESOURCE_GATEWAY_BUDGETS,
     RESOURCE_GATEWAY_ENDPOINTS,
+    RESOURCE_GATEWAY_GUARDRAILS,
     RESOURCE_GATEWAY_MODEL_DEFINITIONS,
     RESOURCE_GATEWAY_SECRETS,
     RESOURCE_REGISTERED_MODELS,
@@ -134,6 +144,7 @@ from mlflow_kubernetes_plugins.auth.resource_names import (
     RESOURCE_NAME_PARSER_ISSUE_ID_TO_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_NEW_EXPERIMENT_NAME,
     RESOURCE_NAME_PARSER_NEW_REGISTERED_MODEL_NAME,
+    RESOURCE_NAME_PARSER_OPTIONAL_ACTION_ENDPOINT_ID_TO_NAME,
     RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_ENDPOINT_NAME,
     RESOURCE_NAME_PARSER_OPTIONAL_GATEWAY_SECRET_ID_TO_NAME,
     RESOURCE_NAME_PARSER_OPTIONAL_TRACE_IDS_TO_EXPERIMENT_NAMES,
@@ -1267,6 +1278,33 @@ def test_resolve_resource_names_rejects_missing_gateway_endpoint_selectors():
             ),
             (RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_SELECTOR_TO_NAME,),
         )
+
+
+def test_resolve_resource_names_reads_optional_action_endpoint_id(monkeypatch):
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    names = resolve_resource_names(
+        AuthorizationRequest(
+            authorization_header=None,
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/gateway/guardrails/create",
+            method="POST",
+            workspace="team-a",
+            json_body={"action_endpoint_id": "endpoint-id-1"},
+        ),
+        (RESOURCE_NAME_PARSER_OPTIONAL_ACTION_ENDPOINT_ID_TO_NAME,),
+    )
+
+    assert names == ("endpoint-alpha",)
 
 
 def test_gateway_endpoint_create_allows_named_model_definition_use(monkeypatch):
@@ -2557,6 +2595,70 @@ def test_mlflow_311_request_authorization_rules_cover_new_endpoints():
     assert "workspace filtering" in (deny_rule.deny_message or "")
 
 
+def test_mlflow_312_request_authorization_rules_cover_new_endpoints():
+    if CreatePresignedUploadUrl is None or CreateGatewayGuardrail is None:
+        pytest.skip("Installed MLflow version does not expose the 3.12 request classes.")
+
+    assert REQUEST_AUTHORIZATION_RULES[CreatePresignedUploadUrl] == AuthorizationRule(
+        "update",
+        resource=RESOURCE_EXPERIMENTS,
+        resource_name_parsers=(RESOURCE_NAME_PARSER_RUN_ID_TO_EXPERIMENT_NAME,),
+    )
+    assert REQUEST_AUTHORIZATION_RULES[CreateGatewayGuardrail] == (
+        AuthorizationRule("create", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        AuthorizationRule(
+            "create",
+            resource=RESOURCE_GATEWAY_ENDPOINTS,
+            subresource="use",
+            resource_name_parsers=(RESOURCE_NAME_PARSER_OPTIONAL_ACTION_ENDPOINT_ID_TO_NAME,),
+            allow_if_resource_reference_missing=True,
+        ),
+    )
+
+    gateway_rules = {
+        GetGatewayGuardrail: AuthorizationRule("get", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        DeleteGatewayGuardrail: AuthorizationRule("delete", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        ListGatewayGuardrails: AuthorizationRule("list", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        AddGuardrailToEndpoint: (
+            AuthorizationRule(
+                "update",
+                resource=RESOURCE_GATEWAY_ENDPOINTS,
+                resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+                skip_gateway_dependency_permissions=True,
+            ),
+            AuthorizationRule("update", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        ),
+        RemoveGuardrailFromEndpoint: (
+            AuthorizationRule(
+                "update",
+                resource=RESOURCE_GATEWAY_ENDPOINTS,
+                resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+                skip_gateway_dependency_permissions=True,
+            ),
+            AuthorizationRule("update", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        ),
+        ListEndpointGuardrailConfigs: (
+            AuthorizationRule(
+                "get",
+                resource=RESOURCE_GATEWAY_ENDPOINTS,
+                resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+            ),
+            AuthorizationRule("list", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        ),
+        UpdateEndpointGuardrailConfig: (
+            AuthorizationRule(
+                "update",
+                resource=RESOURCE_GATEWAY_ENDPOINTS,
+                resource_name_parsers=(RESOURCE_NAME_PARSER_GATEWAY_ENDPOINT_ID_TO_NAME,),
+                skip_gateway_dependency_permissions=True,
+            ),
+            AuthorizationRule("update", resource=RESOURCE_GATEWAY_GUARDRAILS),
+        ),
+    }
+    for request_class, expected_rule in gateway_rules.items():
+        assert REQUEST_AUTHORIZATION_RULES[request_class] == expected_rule
+
+
 def test_mlflow_prefixed_custom_path_authorization_rules_are_registered():
     get_job_rule = PATH_AUTHORIZATION_RULES[("/ajax-api/3.0/mlflow/jobs/<job_id>", "GET")]
     cancel_job_rule = PATH_AUTHORIZATION_RULES[
@@ -2746,6 +2848,217 @@ def test_issue_invoke_requires_named_trace_secret_and_endpoint_permissions(monke
         call.kwargs["resource_name"]
         for call in authorizer.is_allowed.call_args_list
         if call.kwargs.get("resource_name") is not None
+    )
+
+
+def test_presigned_upload_authorizes_run_scoped_experiment_name(monkeypatch):
+    if CreatePresignedUploadUrl is None:
+        pytest.skip("Installed MLflow version does not expose the 3.12 presigned upload request.")
+
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [False, True]
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: _normalize_rules(
+            REQUEST_AUTHORIZATION_RULES[CreatePresignedUploadUrl]
+        ),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_run=lambda run_id: SimpleNamespace(info=SimpleNamespace(experiment_id="exp-id-1")),
+            get_experiment=lambda experiment_id: SimpleNamespace(name="exp-a"),
+        ),
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer upload-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/2.0/mlflow/artifacts/presigned-upload-url",
+            method="POST",
+            workspace="team-a",
+            json_body={"run_id": "run-upload", "path": "models/model.pkl"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    second_call = authorizer.is_allowed.call_args_list[1]
+    assert second_call.args[1:] == (RESOURCE_EXPERIMENTS, "update", "team-a", None)
+    assert second_call.kwargs == {"resource_name": "exp-a"}
+
+
+def test_guardrail_create_skips_optional_endpoint_use_check_when_absent(monkeypatch):
+    if CreateGatewayGuardrail is None:
+        pytest.skip("Installed MLflow version does not expose the 3.12 guardrail create request.")
+
+    authorizer = Mock()
+    authorizer.is_allowed.side_effect = [True, False]
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: _normalize_rules(
+            REQUEST_AUTHORIZATION_RULES[CreateGatewayGuardrail]
+        ),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+
+    result = _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer guardrail-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/gateway/guardrails/create",
+            method="POST",
+            workspace="team-a",
+            json_body={
+                "name": "guardrail-a",
+                "scorer_id": "scorer-1",
+                "scorer_version": 1,
+                "stage": "BEFORE",
+                "action": "VALIDATION",
+            },
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    assert result.request_context.workspace == "team-a"
+    assert authorizer.is_allowed.call_count == 2
+    assert all(
+        call.kwargs.get("resource_name") is None for call in authorizer.is_allowed.call_args_list
+    )
+
+
+def test_guardrail_create_requires_named_action_endpoint_use_permission(monkeypatch):
+    if CreateGatewayGuardrail is None:
+        pytest.skip("Installed MLflow version does not expose the 3.12 guardrail create request.")
+
+    authorizer = Mock()
+
+    def _is_allowed(_identity, resource, verb, workspace, subresource=None, resource_name=None):
+        assert workspace == "team-a"
+        if resource == RESOURCE_GATEWAY_GUARDRAILS and verb == "create":
+            return True
+        if resource == RESOURCE_GATEWAY_ENDPOINTS and verb == "create" and subresource == "use":
+            return resource_name == "endpoint-alpha" if resource_name else False
+        return False
+
+    authorizer.is_allowed.side_effect = _is_allowed
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: _normalize_rules(
+            REQUEST_AUTHORIZATION_RULES[CreateGatewayGuardrail]
+        ),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer guardrail-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/gateway/guardrails/create",
+            method="POST",
+            workspace="team-a",
+            json_body={
+                "name": "guardrail-a",
+                "scorer_id": "scorer-1",
+                "scorer_version": 1,
+                "stage": "AFTER",
+                "action": "SANITIZATION",
+                "action_endpoint_id": "endpoint-id-1",
+            },
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    last_call = authorizer.is_allowed.call_args_list[-1]
+    assert last_call.args[1:] == (RESOURCE_GATEWAY_ENDPOINTS, "create", "team-a", "use")
+    assert last_call.kwargs == {"resource_name": "endpoint-alpha"}
+
+
+def test_add_guardrail_to_endpoint_requires_guardrail_and_named_endpoint_access(monkeypatch):
+    if AddGuardrailToEndpoint is None:
+        pytest.skip(
+            "Installed MLflow version does not expose the 3.12 add-guardrail-to-endpoint request."
+        )
+
+    authorizer = Mock()
+
+    def _is_allowed(_identity, resource, verb, workspace, subresource=None, resource_name=None):
+        assert workspace == "team-a"
+        if resource == RESOURCE_GATEWAY_ENDPOINTS and verb == "update":
+            return resource_name == "endpoint-alpha" if resource_name else False
+        if resource == RESOURCE_GATEWAY_GUARDRAILS and verb == "update":
+            return True
+        return False
+
+    authorizer.is_allowed.side_effect = _is_allowed
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
+        lambda path, method, **kwargs: _normalize_rules(
+            REQUEST_AUTHORIZATION_RULES[AddGuardrailToEndpoint]
+        ),
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
+        lambda token, claim: "k8s-user",
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
+        lambda: SimpleNamespace(
+            get_gateway_endpoint=lambda endpoint_id=None, name=None: SimpleNamespace(
+                name="endpoint-alpha"
+            )
+        ),
+    )
+
+    result = _authorize_request(
+        AuthorizationRequest(
+            authorization_header="Bearer guardrail-token",
+            forwarded_access_token=None,
+            remote_user_header_value=None,
+            remote_groups_header_value=None,
+            path="/api/3.0/mlflow/gateway/guardrails/add-to-endpoint",
+            method="POST",
+            workspace="team-a",
+            json_body={"endpoint_id": "endpoint-id-1", "guardrail_id": "gr-1"},
+        ),
+        authorizer=authorizer,
+        config_values=KubernetesAuthConfig(),
+    )
+
+    assert result.request_context.workspace == "team-a"
+    assert authorizer.is_allowed.call_args_list[1].kwargs == {"resource_name": "endpoint-alpha"}
+    assert authorizer.is_allowed.call_args_list[2].args[1:] == (
+        RESOURCE_GATEWAY_GUARDRAILS,
+        "update",
+        "team-a",
+        None,
     )
 
 
@@ -3481,7 +3794,7 @@ def test_can_access_workspace_iterates_priority_resources(monkeypatch):
     assert authorizer.can_access_workspace(identity, "team-b", verb="get") is False
 
     calls = authorizer.is_allowed.call_args_list
-    assert len(calls) == 7
+    assert len(calls) == 8
     assert [c[0][1] for c in calls] == [
         RESOURCE_EXPERIMENTS,
         RESOURCE_DATASETS,
@@ -3490,6 +3803,7 @@ def test_can_access_workspace_iterates_priority_resources(monkeypatch):
         RESOURCE_GATEWAY_ENDPOINTS,
         RESOURCE_GATEWAY_MODEL_DEFINITIONS,
         RESOURCE_GATEWAY_BUDGETS,
+        RESOURCE_GATEWAY_GUARDRAILS,
     ]
 
 
