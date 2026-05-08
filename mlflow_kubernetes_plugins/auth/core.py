@@ -118,6 +118,7 @@ _STATIC_PREFIX_APPLICABLE_PREFIXES: tuple[str, ...] = (
     "/metrics",
     "/version",
     "/server-info",
+    "/api",
     "/ajax-api",
     "/get-artifact",
     "/model-versions/get-artifact",
@@ -187,9 +188,10 @@ def _canonicalize_path(
     - Strip deployment prefixes (ASGI `root_path`, WSGI `SCRIPT_NAME`) idempotently; if
       they were already removed upstream, this is a no-op.
     - Strip the MLflow static prefix (when configured) only for known static-prefixed
-      routes (e.g., `/ajax-api`, `/static-files`, `/graphql`, root). This produces
-      the canonical path we use for allowlist matching (e.g., `/ajax-api/...` even
-      when the incoming URL was `/mlflow/ajax-api/...`).
+      routes (e.g., `/api`, `/ajax-api`, `/static-files`, `/graphql`, root). This
+      produces the canonical path we use for allowlist matching (e.g.,
+      `/api/...` or `/ajax-api/...` even when the incoming URL was
+      `/mlflow/api/...` or `/mlflow/ajax-api/...`).
 
     Returns:
         Canonicalized, absolute path suitable for authorization rule matching.

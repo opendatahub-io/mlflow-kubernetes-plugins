@@ -265,6 +265,8 @@ def test_parse_remote_groups_variations(header_value, separator, expected):
 
 
 def test_canonicalize_path_prefers_scope_and_path_info(monkeypatch):
+    monkeypatch.setenv(STATIC_PREFIX_ENV_VAR, "/mlflow")
+
     path = _canonicalize_path(
         raw_path="/mlflow/api/2.0/mlflow/runs/create",
         scope_path="/api/2.0/mlflow/runs/create",
@@ -279,8 +281,15 @@ def test_canonicalize_path_prefers_scope_and_path_info(monkeypatch):
     )
     assert path == "/api/2.0/mlflow/runs/create"
 
+    path = _canonicalize_path(
+        raw_path="/mlflow/ajax-api/2.0/mlflow/runs/create",
+        scope_path="/ajax-api/2.0/mlflow/runs/create",
+        root_path="/mlflow",
+    )
+    assert path == "/ajax-api/2.0/mlflow/runs/create"
 
-def test_canonicalize_path_static_prefix_applies_to_static_routes_only(monkeypatch):
+
+def test_canonicalize_path_static_prefix_applies_to_supported_route_families(monkeypatch):
     monkeypatch.setenv(STATIC_PREFIX_ENV_VAR, "/mlflow")
 
     ajax_path = "/mlflow/ajax-api/2.0/mlflow/runs/create"
@@ -290,10 +299,74 @@ def test_canonicalize_path_static_prefix_applies_to_static_routes_only(monkeypat
     version_path = "/mlflow/version"
 
     assert _canonicalize_path(raw_path=ajax_path) == "/ajax-api/2.0/mlflow/runs/create"
-    assert _canonicalize_path(raw_path=api_path) == api_path
+    assert _canonicalize_path(raw_path=api_path) == "/api/2.0/mlflow/runs/create"
     assert _canonicalize_path(raw_path=health_path) == "/health"
     assert _canonicalize_path(raw_path=metrics_path) == "/metrics"
     assert _canonicalize_path(raw_path=version_path) == "/version"
+
+
+@pytest.mark.parametrize(
+    ("static_prefix", "kwargs", "expected"),
+    [
+        (
+            None,
+            {"raw_path": "/api/2.0/mlflow/runs/create"},
+            "/api/2.0/mlflow/runs/create",
+        ),
+        (
+            "/mlflow",
+            {"raw_path": "/mlflow/api/2.0/mlflow/runs/create"},
+            "/api/2.0/mlflow/runs/create",
+        ),
+        (
+            "/mlflow",
+            {"raw_path": "/mlflow/ajax-api/2.0/mlflow/runs/create"},
+            "/ajax-api/2.0/mlflow/runs/create",
+        ),
+        (
+            "/mlflow",
+            {"raw_path": "/mlflow/health"},
+            "/health",
+        ),
+        (
+            "/mlflow",
+            {"raw_path": "/mlflow/version"},
+            "/version",
+        ),
+        (
+            "/mlflow",
+            {"raw_path": "/mlflow/not-a-supported-prefix"},
+            "/mlflow/not-a-supported-prefix",
+        ),
+        (
+            "/mlflow",
+            {
+                "raw_path": "/prefix/api/2.0/mlflow/runs/create",
+                "path_info": "/mlflow/api/2.0/mlflow/runs/create",
+                "script_name": "/prefix",
+            },
+            "/api/2.0/mlflow/runs/create",
+        ),
+        (
+            "/mlflow",
+            {
+                "raw_path": "/prefix/api/2.0/mlflow/runs/create",
+                "scope_path": "/mlflow/api/2.0/mlflow/runs/create",
+                "root_path": "/prefix",
+            },
+            "/api/2.0/mlflow/runs/create",
+        ),
+    ],
+)
+def test_canonicalize_path_static_prefix_respects_env_configuration(
+    monkeypatch, static_prefix, kwargs, expected
+):
+    if static_prefix is None:
+        monkeypatch.delenv(STATIC_PREFIX_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(STATIC_PREFIX_ENV_VAR, static_prefix)
+
+    assert _canonicalize_path(**kwargs) == expected
 
 
 def test_compile_named_path_pattern_escapes_literal_segments():
