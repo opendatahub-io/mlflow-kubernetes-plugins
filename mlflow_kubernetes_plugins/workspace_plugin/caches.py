@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import base64
 import binascii
 import logging
 import threading
-import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -25,6 +26,33 @@ MLFLOW_CONFIG_VERSION = "v1"
 MLFLOW_CONFIG_PLURAL = "mlflowconfigs"
 
 ARTIFACT_CONNECTION_SECRET_NAME = "mlflow-artifact-connection"
+_THREAD_JOIN_TIMEOUT_SECONDS = 5.0
+_LIVE_CACHES: "weakref.WeakSet[object]" = weakref.WeakSet()
+_LIVE_CACHES_LOCK = threading.Lock()
+
+
+def _register_cache_for_shutdown(cache: object) -> None:
+    with _LIVE_CACHES_LOCK:
+        _LIVE_CACHES.add(cache)
+
+
+def _stop_live_caches() -> None:
+    with _LIVE_CACHES_LOCK:
+        live_caches = list(_LIVE_CACHES)
+    for cache in live_caches:
+        try:
+            stop = getattr(cache, "stop", None)
+            if callable(stop):
+                stop()
+        except Exception:
+            _logger.debug("Failed to stop cache during interpreter shutdown", exc_info=True)
+
+
+def _wait_for_stop(stop_event: threading.Event, timeout: float) -> bool:
+    return stop_event.wait(timeout)
+
+
+atexit.register(_stop_live_caches)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +82,9 @@ class NamespaceCache:
         self._api = api
         self._label_selector = label_selector
         self._namespace_exclude_globs = namespace_exclude_globs
+        self._watch_factory = watch.Watch
         self._lock = threading.RLock()
+        self._watcher: watch.Watch | None = None
         self._namespaces: dict[str, NamespaceInfo] = {}
         self._resource_version: str | None = None
         self._stop_event = threading.Event()
@@ -68,9 +98,16 @@ class NamespaceCache:
             daemon=True,
         )
         self._thread.start()
+        _register_cache_for_shutdown(self)
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._lock:
+            watcher = self._watcher
+        if watcher is not None:
+            watcher.stop()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
 
     def list_namespaces(self) -> list[NamespaceInfo]:
         self._wait_until_ready()
@@ -126,11 +163,16 @@ class NamespaceCache:
                     self._refresh_full()
                 except MlflowException:
                     _logger.warning("Failed to refresh namespaces; retrying shortly", exc_info=True)
-                    time.sleep(2)
+                    if _wait_for_stop(self._stop_event, 2):
+                        break
                     continue
 
-            watcher = watch.Watch()
+            watcher = self._watch_factory()
+            with self._lock:
+                self._watcher = watcher
             try:
+                if self._stop_event.is_set():
+                    break
                 for event in watcher.stream(
                     self._api.list_namespace,
                     label_selector=self._label_selector,
@@ -147,12 +189,19 @@ class NamespaceCache:
                     self._resource_version = None
                 else:
                     _logger.warning("Namespace watch error: %s", exc)
-                    time.sleep(2)
+                    if _wait_for_stop(self._stop_event, 2):
+                        break
             except Exception:
                 _logger.exception("Unexpected error in namespace watch loop")
-                time.sleep(2)
+                if _wait_for_stop(self._stop_event, 2):
+                    break
             else:
-                time.sleep(1)
+                if _wait_for_stop(self._stop_event, 1):
+                    break
+            finally:
+                with self._lock:
+                    if self._watcher is watcher:
+                        self._watcher = None
 
     def _handle_event(self, event: dict[str, object]) -> None:
         event_type = event.get("type")
@@ -218,7 +267,9 @@ class MlflowConfigCache:
     ):
         self._api = api
         self._ensure_artifact_connection_secret_cache = ensure_artifact_connection_secret_cache
+        self._watch_factory = watch.Watch
         self._lock = threading.RLock()
+        self._watcher: watch.Watch | None = None
         self._configs: dict[str, MlflowConfigInfo] = {}
         self._resource_version: str | None = None
         self._stop_event = threading.Event()
@@ -235,10 +286,17 @@ class MlflowConfigCache:
             daemon=True,
         )
         self._thread.start()
+        _register_cache_for_shutdown(self)
 
     def stop(self) -> None:
         self._stop_event.set()
         self._retry_event.set()
+        with self._lock:
+            watcher = self._watcher
+        if watcher is not None:
+            watcher.stop()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
 
     def get_config(self, namespace: str) -> MlflowConfigInfo | None:
         """Get MLflowConfig for a namespace, or None if not found."""
@@ -348,15 +406,20 @@ class MlflowConfigCache:
                     self._refresh_full()
                 except Exception:
                     _logger.warning("Failed to refresh MLflowConfig; retrying", exc_info=True)
-                    time.sleep(2)
+                    if _wait_for_stop(self._stop_event, 2):
+                        break
                     continue
 
             # Skip watch if CRD became unavailable during refresh
             if not self._crd_available:
                 continue
 
-            watcher = watch.Watch()
+            watcher = self._watch_factory()
+            with self._lock:
+                self._watcher = watcher
             try:
+                if self._stop_event.is_set():
+                    break
                 for event in watcher.stream(
                     self._api.list_cluster_custom_object,
                     group=MLFLOW_CONFIG_GROUP,
@@ -381,12 +444,19 @@ class MlflowConfigCache:
                         self._resource_version = None
                 else:
                     _logger.warning("MLflowConfig watch error: %s", exc)
-                    time.sleep(2)
+                    if _wait_for_stop(self._stop_event, 2):
+                        break
             except Exception:
                 _logger.exception("Unexpected error in MLflowConfig watch loop")
-                time.sleep(2)
+                if _wait_for_stop(self._stop_event, 2):
+                    break
             else:
-                time.sleep(1)
+                if _wait_for_stop(self._stop_event, 1):
+                    break
+            finally:
+                with self._lock:
+                    if self._watcher is watcher:
+                        self._watcher = None
 
     def _handle_event(self, event: dict[str, object]) -> None:
         event_type = event.get("type")
@@ -453,7 +523,9 @@ class SecretCache:
 
     def __init__(self, api: CoreV1Api):
         self._api = api
+        self._watch_factory = watch.Watch
         self._lock = threading.RLock()
+        self._watcher: watch.Watch | None = None
         self._secrets: dict[str, SecretInfo] = {}
         self._resource_version: str | None = None
         self._stop_event = threading.Event()
@@ -469,10 +541,17 @@ class SecretCache:
             daemon=True,
         )
         self._thread.start()
+        _register_cache_for_shutdown(self)
 
     def stop(self) -> None:
         self._stop_event.set()
         self._retry_event.set()
+        with self._lock:
+            watcher = self._watcher
+        if watcher is not None:
+            watcher.stop()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
 
     def get_secret(self, namespace: str) -> SecretInfo | None:
         self._wait_until_ready()
@@ -548,14 +627,19 @@ class SecretCache:
                     self._refresh_full()
                 except Exception:
                     _logger.warning("Failed to refresh secrets; retrying shortly", exc_info=True)
-                    time.sleep(2)
+                    if _wait_for_stop(self._stop_event, 2):
+                        break
                     continue
 
             if not self._available:
                 continue
 
-            watcher = watch.Watch()
+            watcher = self._watch_factory()
+            with self._lock:
+                self._watcher = watcher
             try:
+                if self._stop_event.is_set():
+                    break
                 for event in watcher.stream(
                     self._api.list_secret_for_all_namespaces,
                     field_selector=f"metadata.name={ARTIFACT_CONNECTION_SECRET_NAME}",
@@ -577,12 +661,19 @@ class SecretCache:
                         self._resource_version = None
                 else:
                     _logger.warning("Secret watch error: %s", exc)
-                    time.sleep(2)
+                    if _wait_for_stop(self._stop_event, 2):
+                        break
             except Exception:
                 _logger.exception("Unexpected error in secret watch loop")
-                time.sleep(2)
+                if _wait_for_stop(self._stop_event, 2):
+                    break
             else:
-                time.sleep(1)
+                if _wait_for_stop(self._stop_event, 1):
+                    break
+            finally:
+                with self._lock:
+                    if self._watcher is watcher:
+                        self._watcher = None
 
     def _handle_event(self, event: dict[str, object]) -> None:
         event_type = event.get("type")

@@ -18,7 +18,7 @@ from mlflow_kubernetes_plugins.auth._compat import (
 )
 from mlflow_kubernetes_plugins.auth.collection_filters import (
     COLLECTION_POLICY_BROAD_ONLY,
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
     COLLECTION_POLICY_RESPONSE_TRACES,
 )
 from mlflow_kubernetes_plugins.auth.resource_names import (
@@ -74,7 +74,7 @@ def apply_v3_11_deltas(
             ),
             SearchIssues: _experiments_rule(
                 "list",
-                collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+                collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
             ),
             # Budget policies intentionally remain workspace-scoped in this plugin.
             # MLflow exposes only opaque budget_policy_id values, not a declarative unique name that

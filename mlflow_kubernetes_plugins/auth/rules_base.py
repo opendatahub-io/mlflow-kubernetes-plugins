@@ -153,10 +153,12 @@ from mlflow.tracing.utils.otlp import OTLP_TRACES_PATH
 
 from mlflow_kubernetes_plugins.auth.collection_filters import (
     COLLECTION_POLICY_BROAD_ONLY,
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
-    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
-    COLLECTION_POLICY_REQUEST_RUN_IDS,
-    COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
+    COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
+    COLLECTION_POLICY_REQUEST_RUN_ID_QUERY,
+    COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
+    COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS_BODY,
     COLLECTION_POLICY_RESPONSE_DATASET_SUMMARIES,
     COLLECTION_POLICY_RESPONSE_EXPERIMENTS,
     COLLECTION_POLICY_RESPONSE_MODEL_VERSIONS,
@@ -504,7 +506,7 @@ BASE_REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[Authoriza
     ),
     SearchDatasets: _datasets_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     SearchEvaluationDatasets: _datasets_rule(
         "list",
@@ -513,7 +515,7 @@ BASE_REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[Authoriza
     # Experiment child resources (multi-experiment reads)
     SearchLoggedModels: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     BatchGetTraces: _experiments_rule(
         "list",
@@ -521,24 +523,24 @@ BASE_REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[Authoriza
     ),
     CalculateTraceFilterCorrelation: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     QueryTraceMetrics: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     SearchTraces: _experiments_rule("list", collection_policy=COLLECTION_POLICY_RESPONSE_TRACES),
     SearchTracesV3: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS,
+        collection_policy=COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS_BODY,
     ),
     GetMetricHistoryBulkInterval: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
     ),
     SearchRuns: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     # Model registry
     CreateRegisteredModel: _registered_models_rule("create"),
@@ -736,7 +738,8 @@ BASE_REQUEST_AUTHORIZATION_RULES: dict[type, AuthorizationRule | tuple[Authoriza
     ),
     SearchPromptOptimizationJobs: _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+        # Upstream reads `experiment_id` from the query string on GET and from the JSON body on POST.
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_QUERY_GET_BODY_POST,
     ),
     CancelPromptOptimizationJob: _experiments_rule(
         "update",
@@ -846,14 +849,15 @@ BASE_PATH_AUTHORIZATION_RULES: dict[
     ),
     ("/ajax-api/2.0/mlflow/metrics/get-history-bulk", "GET"): _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+        # The legacy AJAX bulk endpoint reads repeated `run_id` query params, not `run_ids`.
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_ID_QUERY,
     ),
     (
         "/ajax-api/2.0/mlflow/metrics/get-history-bulk-interval",
         "GET",
     ): _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_RUN_IDS_QUERY_GET_BODY_ON_EMPTY_QUERY,
     ),
     ("/ajax-api/2.0/mlflow/runs/create-promptlab-run", "POST"): _experiments_rule(
         "update",
@@ -868,11 +872,11 @@ BASE_PATH_AUTHORIZATION_RULES: dict[
     ),
     ("/api/2.0/mlflow/experiments/search-datasets", "POST"): _datasets_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     ("/ajax-api/2.0/mlflow/experiments/search-datasets", "POST"): _datasets_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_IDS_BODY,
     ),
     # Assessment deletion (path-parameterized, not matched by handler rules)
     ("/api/3.0/mlflow/traces/<trace_id>/assessments/<assessment_id>", "DELETE"): _experiments_rule(
@@ -909,11 +913,11 @@ BASE_PATH_AUTHORIZATION_RULES: dict[
     ("/ajax-api/3.0/jobs/cancel/<job_id>/", "PATCH"): _experiments_rule("update"),
     ("/ajax-api/3.0/jobs/search", "POST"): _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
     ),
     ("/ajax-api/3.0/jobs/search/", "POST"): _experiments_rule(
         "list",
-        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID,
+        collection_policy=COLLECTION_POLICY_REQUEST_EXPERIMENT_ID_BODY,
     ),
     ("/ajax-api/3.0/mlflow/jobs/<job_id>", "GET"): _experiments_rule("get"),
     ("/ajax-api/3.0/mlflow/jobs/<job_id>/", "GET"): _experiments_rule("get"),
