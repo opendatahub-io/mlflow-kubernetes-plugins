@@ -92,6 +92,32 @@ jobs:
       - name: Run tests
         run: make python-test
 
+  test-static-prefix:
+    runs-on: ubuntu-latest
+    name: test-static-prefix (3.12, mlflow ${{ matrix.mlflow-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep quoted so YAML does not coerce 3.10 to 3.1.
+        mlflow-version: ["3.10", "3.11", "3.12"]
+    env:
+      _MLFLOW_STATIC_PREFIX: /mlflow
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" "mlflow~=${{ matrix.mlflow-version }}.0"
+
+      - name: Run tests with static prefix
+        run: make python-test
+
   build:
     runs-on: ubuntu-latest
     steps:
