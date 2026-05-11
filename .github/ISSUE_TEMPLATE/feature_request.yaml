@@ -1,0 +1,35 @@
+name: Feature Request
+description: Suggest an idea for the MLflow Kubeflow integration
+labels: ["kind/feature"]
+body:
+  - type: textarea
+    id: feature
+    attributes:
+      label: What would you like to be added?
+      description: |
+        A clear and concise description of what you want.
+        For large features, please consider writing a
+        [Kubeflow Enhancement Proposal (KEP)](https://github.com/kubeflow/community/tree/master/proposals).
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Why is this needed?
+    validations:
+      required: true
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Willing to contribute?
+      options:
+        - "Yes, I can contribute this independently"
+        - "Yes, with guidance from maintainers"
+        - "No"
+    validations:
+      required: false
+  - type: input
+    id: votes
+    attributes:
+      label: Love this feature?
+      value: Give it a 👍 We prioritize the features with most 👍
