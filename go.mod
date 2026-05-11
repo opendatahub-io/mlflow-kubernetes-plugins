@@ -1,4 +1,4 @@
-module github.com/opendatahub-io/mlflow-kubernetes-plugins
+module github.com/kubeflow/mlflow-integration
 
 go 1.24.2
 

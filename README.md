@@ -1,11 +1,17 @@
-# MLflow Kubernetes Plugins
+# MLflow Kubeflow Integration
+
+This repository provides the integration layer between [MLflow](https://mlflow.org/) and
+[Kubeflow](https://www.kubeflow.org/), making MLflow the first-class experiment tracking
+experience for the Kubeflow platform
+([KEP-897](https://github.com/kubeflow/community/pull/892)).
 
 This repository packages two MLflow extensions for Kubernetes-backed deployments:
 
 - a workspace provider that maps MLflow workspaces to Kubernetes namespaces
 - an optional authorization plugin that enforces Kubernetes RBAC for MLflow requests
 
-These plugins build on top of MLflow's 3.10 workspace support. If you are new to MLflow workspaces, start with the official guide: <https://mlflow.org/docs/latest/self-hosting/workspaces/getting-started/>. It covers the core MLflow server requirements, how workspace context is set by clients, and the upstream workspace lifecycle model.
+These plugins build on top of MLflow's workspace support. If you are new to MLflow workspaces,
+start with the official guide: <https://mlflow.org/docs/latest/self-hosting/workspaces/getting-started/>.
 
 ## Components
 
@@ -58,12 +64,4 @@ Use `--app-name kubernetes-auth` only when you want request authorization enforc
 
 ## Development
 
-Run the main local checks from the repository root:
-
-```bash
-pip install -e ".[dev]"
-make generate-k8s
-ruff check .
-pytest
-python -m build
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding style, and testing instructions.
