@@ -1,0 +1,58 @@
+name: Bug Report
+description: Report a problem with the MLflow Kubeflow integration
+labels: ["kind/bug"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: |
+        Please provide as much info as possible. Not doing so may result in your bug not being
+        addressed in a timely manner.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: |
+        Minimal steps to reproduce the behavior.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - MLflow version:
+        - mlflow-kubernetes-plugins version:
+        - Kubernetes version:
+        - Python version:
+        - Deployment mode: (standalone / Kubeflow)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Please copy and paste any relevant log output.
+      render: text
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Willing to contribute a fix?
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: false
+  - type: input
+    id: votes
+    attributes:
+      label: Impacted by this bug?
+      value: Give it a 👍 We prioritize the issues with most 👍
