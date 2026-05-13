@@ -1083,8 +1083,8 @@ def test_gateway_model_definition_update_allows_existing_named_secret_use(monkey
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
         lambda: SimpleNamespace(
-            get_gateway_model_definition=lambda model_definition_id=None, name=None: SimpleNamespace(
-                secret_name="secret-a"
+            get_gateway_model_definition=lambda model_definition_id=None, name=None: (
+                SimpleNamespace(secret_name="secret-a")
             )
         ),
     )
@@ -1135,8 +1135,8 @@ def test_gateway_model_definition_update_requires_existing_secret_use(monkeypatc
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
         lambda: SimpleNamespace(
-            get_gateway_model_definition=lambda model_definition_id=None, name=None: SimpleNamespace(
-                secret_name="secret-a"
+            get_gateway_model_definition=lambda model_definition_id=None, name=None: (
+                SimpleNamespace(secret_name="secret-a")
             )
         ),
     )
@@ -2143,8 +2143,8 @@ def test_authorize_request_prefilters_experiment_ids_after_broad_denial(monkeypa
 
 def test_apply_request_collection_filter_keeps_experiment_id_sources_separate(monkeypatch):
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-body"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-body"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
@@ -2181,8 +2181,8 @@ def test_apply_request_collection_filter_denies_single_experiment_id_when_query_
     monkeypatch,
 ):
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-body"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-body"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
@@ -2215,8 +2215,8 @@ def test_apply_request_collection_filter_denies_single_experiment_id_when_query_
 
 def test_authorize_request_prefilters_run_ids_after_broad_denial(monkeypatch):
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
     )
     rule = AuthorizationRule(
         "list",
@@ -2259,10 +2259,13 @@ def test_authorize_request_prefilters_run_ids_after_broad_denial(monkeypatch):
 
 def test_apply_request_collection_filter_keeps_run_id_sources_separate(monkeypatch):
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") in {
-        "exp-body",
-        "exp-query",
-    }
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name")
+        in {
+            "exp-body",
+            "exp-query",
+        }
+    )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_run_id",
         lambda run_id: {
@@ -3694,8 +3697,8 @@ def test_run_id_cache_uses_stable_experiment_id_after_rename(monkeypatch):
 
 def test_apply_response_collection_filters_filters_experiments():
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
     )
 
     filtered, enforceable = apply_response_collection_filters(
@@ -3764,8 +3767,8 @@ def test_apply_response_collection_filters_enforceable_when_key_absent():
 
 def test_apply_request_collection_filter_trace_locations(monkeypatch):
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",

@@ -45,9 +45,14 @@ def compile_auth_rules(monkeypatch):
             return
 
         def _fake_get_endpoints(resolver):
-            return [(path, resolver(request_class), methods) for path, request_class, methods in endpoint_specs]
+            return [
+                (path, resolver(request_class), methods)
+                for path, request_class, methods in endpoint_specs
+            ]
 
-        monkeypatch.setattr("mlflow_kubernetes_plugins.auth.compiler.get_endpoints", _fake_get_endpoints)
+        monkeypatch.setattr(
+            "mlflow_kubernetes_plugins.auth.compiler.get_endpoints", _fake_get_endpoints
+        )
         monkeypatch.setattr(
             "mlflow_kubernetes_plugins.auth.compiler.mlflow_app.url_map.iter_rules",
             lambda: [],

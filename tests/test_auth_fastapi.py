@@ -124,9 +124,7 @@ def test_fastapi_auth_leaves_non_json_bodies_unloaded(monkeypatch) -> None:
     app.add_middleware(_WorkspaceContextMiddleware)
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
-        lambda path, method, **kwargs: [
-            AuthorizationRule("update", resource="experiments")
-        ],
+        lambda path, method, **kwargs: [AuthorizationRule("update", resource="experiments")],
     )
     client = TestClient(app)
 
@@ -221,8 +219,8 @@ def test_fastapi_auth_loads_json_body_on_named_trace_retry(
     )
     app.add_middleware(_WorkspaceContextMiddleware)
 
-    mock_authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    mock_authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.resource_names._get_tracking_store",
@@ -249,11 +247,7 @@ def test_fastapi_auth_loads_json_body_on_named_trace_retry(
             },
             json={
                 "trace": {
-                    "trace_info": {
-                        "trace_location": {
-                            "mlflow_experiment": {"experiment_id": "1"}
-                        }
-                    }
+                    "trace_info": {"trace_location": {"mlflow_experiment": {"experiment_id": "1"}}}
                 }
             },
         )
@@ -798,8 +792,8 @@ def test_fastapi_response_collection_filter_applies_to_experiments(
     )
     app.add_middleware(_WorkspaceContextMiddleware)
 
-    mock_authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    mock_authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.compiler._find_authorization_rules",
@@ -900,8 +894,8 @@ def test_fastapi_rewrites_experiment_id_sources_for_mounted_flask_app(
     )
     app.add_middleware(_WorkspaceContextMiddleware)
 
-    mock_authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-body"
+    mock_authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-body"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
@@ -959,8 +953,8 @@ def test_fastapi_rewrites_native_query_params_and_clears_request_cache(
     )
     app.add_middleware(_WorkspaceContextMiddleware)
 
-    mock_authorizer.is_allowed.side_effect = (
-        lambda *args, **kwargs: kwargs.get("resource_name") == "exp-allowed"
+    mock_authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-allowed"
     )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
@@ -1166,10 +1160,20 @@ def test_create_app_wraps_flask_with_fastapi(monkeypatch):
     authorizer = Mock(spec=KubernetesAuthorizer)
     config_values = Mock(spec=KubernetesAuthConfig)
 
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware._compile_authorization_rules", lambda: None)
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware.create_fastapi_app", lambda app: fastapi_app)
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware._validate_fastapi_route_authorization", validate_fastapi_routes)
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware._validate_graphql_field_authorization", validate_graphql)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware._compile_authorization_rules", lambda: None
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware.create_fastapi_app", lambda app: fastapi_app
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware._validate_fastapi_route_authorization",
+        validate_fastapi_routes,
+    )
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware._validate_graphql_field_authorization",
+        validate_graphql,
+    )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.middleware.KubernetesAuthConfig.from_env",
         lambda: config_values,
@@ -1215,7 +1219,9 @@ def test_create_app_validates_current_mlflow_startup_rules(monkeypatch):
         "mlflow_kubernetes_plugins.auth.middleware.KubernetesAuthorizer",
         lambda config_values: authorizer,
     )
-    monkeypatch.setattr("mlflow_kubernetes_plugins.auth.middleware.atexit.register", lambda fn: None)
+    monkeypatch.setattr(
+        "mlflow_kubernetes_plugins.auth.middleware.atexit.register", lambda fn: None
+    )
 
     _reset_compiled_rules()
 

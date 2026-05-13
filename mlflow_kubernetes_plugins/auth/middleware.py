@@ -61,6 +61,7 @@ _GRAPHQL_AUTHORIZER: ContextVar[KubernetesAuthorizer | None] = ContextVar(
     default=None,
 )
 
+
 def _replace_scope_headers(scope: Scope, updates: dict[str, str]) -> None:
     """Replace (or add) ASGI scope headers, matching case-insensitively."""
     encoded = {k.lower().encode("latin-1"): v.encode("latin-1") for k, v in updates.items()}
@@ -90,10 +91,13 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
         state[_REQUEST_JSON_BODY_STATE_KEY] = payload
         state[_REQUEST_BODY_LOADED_STATE_KEY] = True
         request._body = raw_body
-        _replace_scope_headers(request.scope, {
-            "content-length": str(len(raw_body)),
-            "content-type": "application/json",
-        })
+        _replace_scope_headers(
+            request.scope,
+            {
+                "content-length": str(len(raw_body)),
+                "content-type": "application/json",
+            },
+        )
 
     @staticmethod
     def _set_request_query_params(request: Request, query_params: dict[str, object]) -> None:
@@ -161,7 +165,9 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
             and updated_request_context.json_body != original_request_context.json_body
         )
         needs_user_override = override_run_user and username
-        if isinstance(updated_request_context.json_body, dict) and (body_changed or needs_user_override):
+        if isinstance(updated_request_context.json_body, dict) and (
+            body_changed or needs_user_override
+        ):
             payload = (
                 copy.deepcopy(updated_request_context.json_body)
                 if needs_user_override
@@ -242,7 +248,9 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
         )
 
     @staticmethod
-    async def _read_json_response_payload(response) -> tuple[dict[str, object] | None, bytes | None]:
+    async def _read_json_response_payload(
+        response,
+    ) -> tuple[dict[str, object] | None, bytes | None]:
         """Consume a streaming Starlette response body and JSON-decode it.
 
         The consumed bytes are re-attached to ``response.body_iterator`` so
@@ -316,7 +324,9 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
                 # also falls back to the configured default workspace when the header is missing
                 # or empty.
                 try:
-                    workspace = resolve_workspace_from_header(request.headers.get(WORKSPACE_HEADER_NAME))
+                    workspace = resolve_workspace_from_header(
+                        request.headers.get(WORKSPACE_HEADER_NAME)
+                    )
                 except MlflowException as exc:
                     return JSONResponse(
                         status_code=exc.get_http_status_code(),
@@ -385,6 +395,7 @@ class KubernetesAuthMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             _AUTHORIZATION_HANDLED.reset(authorization_token)
+
 
 def _registered_graphql_auth_middleware():
     authorizer = _GRAPHQL_AUTHORIZER.get()

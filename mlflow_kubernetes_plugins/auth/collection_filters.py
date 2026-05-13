@@ -67,7 +67,9 @@ def is_graphql_collection_policy(policy: str | None) -> bool:
 
 def response_filter_policies(rules: list["AuthorizationRule"]) -> set[str]:
     return {
-        rule.collection_policy for rule in rules if is_response_filter_policy(rule.collection_policy)
+        rule.collection_policy
+        for rule in rules
+        if is_response_filter_policy(rule.collection_policy)
     }
 
 
@@ -236,7 +238,8 @@ def _filter_request_experiment_ids(
     workspace_name: str,
 ) -> tuple[AuthorizationRequest, bool]:
     body_has_experiment_ids = (
-        isinstance(request_context.json_body, dict) and "experiment_ids" in request_context.json_body
+        isinstance(request_context.json_body, dict)
+        and "experiment_ids" in request_context.json_body
     )
     query_has_experiment_ids = "experiment_ids" in request_context.query_params
     if not body_has_experiment_ids and not query_has_experiment_ids:
@@ -279,7 +282,9 @@ def _filter_request_experiment_ids(
             filtered_query_params["experiment_ids"] = readable_query_ids
         else:
             filtered_query_params.pop("experiment_ids", None)
-        updated_request_context = replace(updated_request_context, query_params=filtered_query_params)
+        updated_request_context = replace(
+            updated_request_context, query_params=filtered_query_params
+        )
 
     return updated_request_context, True
 
@@ -328,7 +333,9 @@ def _filter_request_run_ids(
     identity: "_RequestIdentity",
     workspace_name: str,
 ) -> tuple[AuthorizationRequest, bool]:
-    body_has_run_ids = isinstance(request_context.json_body, dict) and "run_ids" in request_context.json_body
+    body_has_run_ids = (
+        isinstance(request_context.json_body, dict) and "run_ids" in request_context.json_body
+    )
     query_has_run_ids = "run_ids" in request_context.query_params
     if not body_has_run_ids and not query_has_run_ids:
         return request_context, False
@@ -339,10 +346,14 @@ def _filter_request_run_ids(
         else []
     )
     query_run_ids = (
-        _normalize_request_values(request_context.query_params.get("run_ids")) if query_has_run_ids else []
+        _normalize_request_values(request_context.query_params.get("run_ids"))
+        if query_has_run_ids
+        else []
     )
     readable_body_ids = filter_readable_run_ids(authorizer, identity, workspace_name, body_run_ids)
-    readable_query_ids = filter_readable_run_ids(authorizer, identity, workspace_name, query_run_ids)
+    readable_query_ids = filter_readable_run_ids(
+        authorizer, identity, workspace_name, query_run_ids
+    )
     if not readable_body_ids and not readable_query_ids:
         return request_context, False
 
@@ -358,7 +369,9 @@ def _filter_request_run_ids(
             filtered_query_params["run_ids"] = readable_query_ids
         else:
             filtered_query_params.pop("run_ids", None)
-        updated_request_context = replace(updated_request_context, query_params=filtered_query_params)
+        updated_request_context = replace(
+            updated_request_context, query_params=filtered_query_params
+        )
 
     return updated_request_context, True
 
@@ -421,7 +434,9 @@ def apply_request_collection_filter(
     if policy == COLLECTION_POLICY_REQUEST_RUN_IDS:
         return _filter_request_run_ids(request_context, authorizer, identity, workspace_name)
     if policy == COLLECTION_POLICY_REQUEST_TRACE_LOCATIONS:
-        return _filter_request_trace_locations(request_context, authorizer, identity, workspace_name)
+        return _filter_request_trace_locations(
+            request_context, authorizer, identity, workspace_name
+        )
     return request_context, False
 
 
@@ -440,9 +455,7 @@ def _filter_payload_experiments(
         experiment
         for experiment in experiments
         if isinstance(experiment, dict)
-        and (
-            experiment_name := _normalize_string(experiment.get("name"))
-        )
+        and (experiment_name := _normalize_string(experiment.get("name")))
         and _is_allowed_named_resource(
             authorizer,
             identity,
@@ -498,9 +511,7 @@ def _filter_payload_registered_models(
         model
         for model in registered_models
         if isinstance(model, dict)
-        and (
-            model_name := _normalize_string(model.get("name"))
-        )
+        and (model_name := _normalize_string(model.get("name")))
         and _is_allowed_named_resource(
             authorizer,
             identity,
@@ -527,9 +538,7 @@ def _filter_payload_model_versions(
         model_version
         for model_version in model_versions
         if isinstance(model_version, dict)
-        and (
-            model_name := _normalize_string(model_version.get("name"))
-        )
+        and (model_name := _normalize_string(model_version.get("name")))
         and _is_allowed_named_resource(
             authorizer,
             identity,
@@ -543,11 +552,7 @@ def _filter_payload_model_versions(
 
 def _trace_experiment_id(trace: dict[str, object]) -> str | None:
     """Extract an experiment ID from trace payloads across MLflow's mixed field spellings."""
-    trace_info = (
-        trace.get("trace_info")
-        or trace.get("traceInfo")
-        or trace.get("info")
-    )
+    trace_info = trace.get("trace_info") or trace.get("traceInfo") or trace.get("info")
     if isinstance(trace_info, dict):
         experiment_id = _normalize_string(
             _first_present_value(trace_info, "experiment_id", "experimentId")
@@ -655,9 +660,7 @@ def filter_graphql_model_versions_result(
     filtered = [
         model_version
         for model_version in result.model_versions
-        if (
-            model_name := _normalize_string(getattr(model_version, "name", None))
-        )
+        if (model_name := _normalize_string(getattr(model_version, "name", None)))
         and _is_allowed_named_resource(
             authorizer,
             identity,

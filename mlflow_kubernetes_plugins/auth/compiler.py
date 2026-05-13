@@ -218,9 +218,7 @@ def _extract_path_params(request_path: str, method: str) -> dict[str, str]:
             continue
         match = pattern.fullmatch(request_path)
         if match is not None:
-            return {
-                key: value for key, value in match.groupdict().items() if value is not None
-            }
+            return {key: value for key, value in match.groupdict().items() if value is not None}
     return {}
 
 
@@ -242,7 +240,9 @@ def _find_authorization_rules(
 
             query_string = payload.get("query", "")
             if not query_string:
-                core_mod._logger.error("Could not determine GraphQL authorization: no query provided.")
+                core_mod._logger.error(
+                    "Could not determine GraphQL authorization: no query provided."
+                )
                 return None
 
             variables = payload.get("variables")
