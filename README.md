@@ -1,5 +1,9 @@
 # MLflow Kubeflow Integration
 
+[![PyPI version](https://img.shields.io/pypi/v/mlflow-kubernetes-plugins?color=%2334D058&label=pypi%20package)](https://pypi.org/project/mlflow-kubernetes-plugins/)
+[![License](https://img.shields.io/github/license/kubeflow/mlflow-integration)](https://github.com/kubeflow/mlflow-integration/blob/main/LICENSE)
+[![Join Slack](https://img.shields.io/badge/Join_Slack-blue?logo=slack)](https://www.kubeflow.org/docs/about/community/#kubeflow-slack-channels)
+
 This repository provides the integration layer between [MLflow](https://mlflow.org/) and
 [Kubeflow](https://www.kubeflow.org/), making MLflow the first-class experiment tracking
 experience for the Kubeflow platform
