@@ -225,8 +225,7 @@ def _all_request_filter_occurrences_are_filterable(
         if root_field.field_name == field_name
     ]
     return bool(matching_root_fields) and all(
-        _root_field_has_filterable_experiment_ids(root_field)
-        for root_field in matching_root_fields
+        _root_field_has_filterable_experiment_ids(root_field) for root_field in matching_root_fields
     )
 
 
@@ -361,7 +360,8 @@ def determine_graphql_rules(
     if query_info.has_nested_model_registry_access and any(
         not (
             GRAPHQL_FIELD_RESOURCE_MAP.get(field) == RESOURCE_REGISTERED_MODELS
-            and GRAPHQL_FIELD_AUTH_POLICY_MAP.get(field) == GRAPHQL_FIELD_AUTH_POLICY_RESPONSE_FILTER
+            and GRAPHQL_FIELD_AUTH_POLICY_MAP.get(field)
+            == GRAPHQL_FIELD_AUTH_POLICY_RESPONSE_FILTER
         )
         for field in query_info.nested_model_registry_root_fields
     ):
@@ -463,7 +463,11 @@ def validate_graphql_field_authorization() -> None:
                 missing_policy.append(f"Mutation.{field_name}")
 
     for field_name, parser_ids in GRAPHQL_FIELD_RESOURCE_NAME_PARSERS.items():
-        if parser_ids and GRAPHQL_FIELD_AUTH_POLICY_MAP.get(field_name) != GRAPHQL_FIELD_AUTH_POLICY_SINGLE_OBJECT:
+        if (
+            parser_ids
+            and GRAPHQL_FIELD_AUTH_POLICY_MAP.get(field_name)
+            != GRAPHQL_FIELD_AUTH_POLICY_SINGLE_OBJECT
+        ):
             invalid_non_single_object_policy.append(field_name)
 
     for field_name, auth_policy in GRAPHQL_FIELD_AUTH_POLICY_MAP.items():

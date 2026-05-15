@@ -9,6 +9,10 @@ GENERATED_FILES = api/mlflowconfig/v1/zz_generated.deepcopy.go config/crd/bases/
 python-lint: ## Run Python lint checks.
 	ruff check .
 
+.PHONY: python-typecheck
+python-typecheck: ## Run Python type checker.
+	ty check mlflow_kubernetes_plugins
+
 .PHONY: python-test
 python-test: ## Run Python test suite.
 	pytest -v

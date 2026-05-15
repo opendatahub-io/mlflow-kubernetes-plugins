@@ -375,11 +375,15 @@ async def _enforce_gateway_dependency_permissions(
         and rule.verb in ("create", "update")
     ):
         try:
-            dependency_names = resolve_gateway_model_definition_names_for_use(updated_request_context)
+            dependency_names = resolve_gateway_model_definition_names_for_use(
+                updated_request_context
+            )
         except ResourceNameResolutionError:
             dependency_names = ()
         if not dependency_names:
-            updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+            updated_request_context = await _ensure_request_context_json_body(
+                updated_request_context
+            )
             try:
                 dependency_names = resolve_gateway_model_definition_names_for_use(
                     updated_request_context
@@ -434,7 +438,9 @@ async def _enforce_gateway_dependency_permissions(
         except ResourceNameResolutionError:
             dependency_names = ()
         if not dependency_names:
-            updated_request_context = await _ensure_request_context_json_body(updated_request_context)
+            updated_request_context = await _ensure_request_context_json_body(
+                updated_request_context
+            )
             try:
                 dependency_names = resolve_gateway_secret_names_for_use(updated_request_context)
             except ResourceNameResolutionError:

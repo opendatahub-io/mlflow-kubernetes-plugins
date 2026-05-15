@@ -219,9 +219,7 @@ def test_determine_graphql_rules_single_root_field_adds_name_parser():
     rules = determine_graphql_rules(info, AuthorizationRule)
     assert rules is not None
     assert len(rules) == 1
-    assert rules[0].resource_name_parsers == (
-        RESOURCE_NAME_PARSER_GRAPHQL_EXPERIMENT_ID_TO_NAME,
-    )
+    assert rules[0].resource_name_parsers == (RESOURCE_NAME_PARSER_GRAPHQL_EXPERIMENT_ID_TO_NAME,)
 
 
 def test_determine_graphql_rules_multiple_single_object_fields_preserve_all_name_parsers():
@@ -368,7 +366,9 @@ def test_determine_graphql_rules_keeps_broad_and_single_object_policies_separate
     assert rules is not None
     assert len(rules) == 2
     broad_rule = next(
-        rule for rule in rules if rule.resource == RESOURCE_EXPERIMENTS and rule.resource_name_parsers == ()
+        rule
+        for rule in rules
+        if rule.resource == RESOURCE_EXPERIMENTS and rule.resource_name_parsers == ()
     )
     scoped_rule = next(
         rule
@@ -726,7 +726,9 @@ def test_authorize_request_graphql_mixed_broad_and_single_object_denies_without_
     monkeypatch,
 ):
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
+    )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.core._parse_jwt_subject",
         lambda token, claim: "k8s-user",
@@ -923,7 +925,9 @@ def test_authorize_request_graphql_alias_mixture_without_experiment_ids_denies(m
 def test_kubernetes_graphql_middleware_filters_search_runs_input(monkeypatch):
     app = Flask(__name__)
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
+    )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
         lambda experiment_id: {"1": "exp-a", "2": "exp-b"}[experiment_id],
@@ -931,7 +935,9 @@ def test_kubernetes_graphql_middleware_filters_search_runs_input(monkeypatch):
     middleware = KubernetesGraphQLAuthorizationMiddleware(authorizer)
 
     with app.test_request_context("/graphql"):
-        token = _AUTHORIZATION_HANDLED.set(SimpleNamespace(identity=_RequestIdentity(token="token")))
+        token = _AUTHORIZATION_HANDLED.set(
+            SimpleNamespace(identity=_RequestIdentity(token="token"))
+        )
         workspace_context.set_server_request_workspace("team-a")
         try:
             input_obj = SimpleNamespace(experiment_ids=["1", "2"])
@@ -952,7 +958,9 @@ def test_kubernetes_graphql_middleware_filters_search_runs_input(monkeypatch):
 def test_kubernetes_graphql_middleware_filters_search_datasets_input(monkeypatch):
     app = Flask(__name__)
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
+    )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
         lambda experiment_id: {"1": "exp-a", "2": "exp-b"}[experiment_id],
@@ -960,7 +968,9 @@ def test_kubernetes_graphql_middleware_filters_search_datasets_input(monkeypatch
     middleware = KubernetesGraphQLAuthorizationMiddleware(authorizer)
 
     with app.test_request_context("/graphql"):
-        token = _AUTHORIZATION_HANDLED.set(SimpleNamespace(identity=_RequestIdentity(token="token")))
+        token = _AUTHORIZATION_HANDLED.set(
+            SimpleNamespace(identity=_RequestIdentity(token="token"))
+        )
         workspace_context.set_server_request_workspace("team-a")
         try:
             input_obj = SimpleNamespace(experiment_ids=["1", "2"])
@@ -981,7 +991,9 @@ def test_kubernetes_graphql_middleware_filters_search_datasets_input(monkeypatch
 def test_kubernetes_graphql_middleware_filters_search_runs_dict_input(monkeypatch):
     app = Flask(__name__)
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") == "exp-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "exp-a"
+    )
     monkeypatch.setattr(
         "mlflow_kubernetes_plugins.auth.collection_filters._resolve_experiment_name_from_experiment_id",
         lambda experiment_id: {"1": "exp-a", "2": "exp-b"}[experiment_id],
@@ -989,7 +1001,9 @@ def test_kubernetes_graphql_middleware_filters_search_runs_dict_input(monkeypatc
     middleware = KubernetesGraphQLAuthorizationMiddleware(authorizer)
 
     with app.test_request_context("/graphql"):
-        token = _AUTHORIZATION_HANDLED.set(SimpleNamespace(identity=_RequestIdentity(token="token")))
+        token = _AUTHORIZATION_HANDLED.set(
+            SimpleNamespace(identity=_RequestIdentity(token="token"))
+        )
         workspace_context.set_server_request_workspace("team-a")
         try:
             input_obj = {"experimentIds": ["1", "2"]}
@@ -1010,14 +1024,18 @@ def test_kubernetes_graphql_middleware_filters_search_runs_dict_input(monkeypatc
 def test_kubernetes_graphql_middleware_filters_model_versions_response():
     app = Flask(__name__)
     authorizer = Mock()
-    authorizer.is_allowed.side_effect = lambda *args, **kwargs: kwargs.get("resource_name") == "model-a"
+    authorizer.is_allowed.side_effect = lambda *args, **kwargs: (
+        kwargs.get("resource_name") == "model-a"
+    )
     middleware = KubernetesGraphQLAuthorizationMiddleware(authorizer)
     result_obj = SimpleNamespace(
         model_versions=[SimpleNamespace(name="model-a"), SimpleNamespace(name="model-b")]
     )
 
     with app.test_request_context("/graphql"):
-        token = _AUTHORIZATION_HANDLED.set(SimpleNamespace(identity=_RequestIdentity(token="token")))
+        token = _AUTHORIZATION_HANDLED.set(
+            SimpleNamespace(identity=_RequestIdentity(token="token"))
+        )
         workspace_context.set_server_request_workspace("team-a")
         try:
             info = SimpleNamespace(field_name="mlflowSearchModelVersions")

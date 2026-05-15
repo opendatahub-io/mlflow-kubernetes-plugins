@@ -152,9 +152,7 @@ class _AuthorizationCache:
             self._entries.pop(key, None)
             while len(self._entries) >= self._max_entries:
                 self._entries.popitem(last=False)
-            self._entries[key] = _CacheEntry(
-                allowed=allowed, expires_at=now + self._ttl_seconds
-            )
+            self._entries[key] = _CacheEntry(allowed=allowed, expires_at=now + self._ttl_seconds)
         finally:
             self._lock.release_write()
 
