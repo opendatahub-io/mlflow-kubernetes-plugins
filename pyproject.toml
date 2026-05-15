@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{ name = "Red Hat" }]
+authors = [{ name = "The Kubeflow Authors", email = "kubeflow-discuss@googlegroups.com" }]
 keywords = ["mlflow", "kubernetes", "workspaces", "authorization", "plugins"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -33,10 +33,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins"
-Repository = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins"
-Issues = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins/issues"
-Documentation = "https://github.com/opendatahub-io/mlflow-kubernetes-plugins/tree/main/docs"
+Homepage = "https://github.com/kubeflow/mlflow-integration"
+Repository = "https://github.com/kubeflow/mlflow-integration"
+Issues = "https://github.com/kubeflow/mlflow-integration/issues"
+Documentation = "https://github.com/kubeflow/mlflow-integration/tree/main/docs"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "pytest-mock>=3.10", "httpx>=0.27.0", "ruff", "ty>=0.0.35", "build"]
