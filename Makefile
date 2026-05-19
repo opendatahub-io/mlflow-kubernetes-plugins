@@ -1,6 +1,8 @@
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+IMG ?= mlflow-integration
+CONTAINER_TOOL ?= docker
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 GENERATED_FILES = api/mlflowconfig/v1/zz_generated.deepcopy.go config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml
@@ -16,6 +18,10 @@ python-typecheck: ## Run Python type checker.
 .PHONY: python-test
 python-test: ## Run Python test suite.
 	pytest -v
+
+.PHONY: image-build
+image-build: ## Build the container image.
+	$(CONTAINER_TOOL) build -t $(IMG) .
 
 .PHONY: generate-deepcopy
 generate-deepcopy: ## Generate deepcopy implementations for Go API types.
