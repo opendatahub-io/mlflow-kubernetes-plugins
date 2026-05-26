@@ -19,12 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
-      - uses: pre-commit/action@v3.0.1
-        with:
-          extra_args: --all-files
+          enable-cache: true
+      - name: Sync development dependencies
+        run: uv sync --extra dev
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files
 
   verify-kubernetes-api:
     runs-on: ubuntu-latest
@@ -87,16 +89,15 @@ jobs:
         mlflow-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" "mlflow~=${{ matrix.mlflow-version }}.0"
+        run: |
+          uv venv
+          uv pip install -e ".[dev]" "mlflow~=${{ matrix.mlflow-version }}.0"
 
       - name: Lint
         run: make python-lint
@@ -116,16 +117,15 @@ jobs:
       _MLFLOW_STATIC_PREFIX: /mlflow
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: pip install -e ".[dev]" "mlflow~=${{ matrix.mlflow-version }}.0"
+        run: |
+          uv venv
+          uv pip install -e ".[dev]" "mlflow~=${{ matrix.mlflow-version }}.0"
 
       - name: Run tests with static prefix
         run: make python-test
@@ -134,15 +134,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+          enable-cache: true
 
       - name: Build distribution artifacts
-        run: |
-          pip install build
-          python -m build
+        run: uv build

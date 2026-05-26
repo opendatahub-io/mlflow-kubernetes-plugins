@@ -35,7 +35,7 @@ pip install mlflow-kubernetes-plugins
 For local development:
 
 ```bash
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 ## Quick Start

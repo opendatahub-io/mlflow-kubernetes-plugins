@@ -10,26 +10,29 @@
 ## Commands
 
 ```bash
+# Setup
+make install-dev                               # Sync development dependencies
+
 # Lint
-make python-lint                       # Lint entire project
-ruff check path/to/file.py             # Lint single file
-ruff check --fix path/to/file.py       # Lint and auto-fix single file
-ruff format path/to/file.py            # Format single file
+make python-lint                               # Lint entire project
+uv run ruff check path/to/file.py              # Lint single file
+uv run ruff check --fix path/to/file.py        # Lint and auto-fix single file
+uv run ruff format path/to/file.py             # Format single file
 
 # Type checking
-make python-typecheck                  # Type-check entire project
-ty check path/to/file.py               # Type-check single file
+make python-typecheck                          # Type-check entire project
+uv run ty check path/to/file.py                # Type-check single file
 
 # Testing
-make python-test                       # Run all tests
-pytest tests/test_auth.py              # Run single test file
-pytest tests/test_auth.py -k "pattern" # Run tests matching pattern
+make python-test                               # Run all tests
+uv run pytest tests/test_auth.py               # Run single test file
+uv run pytest tests/test_auth.py -k "pattern"  # Run tests matching pattern
 
 # Build
-python -m build                        # Build distribution artifacts
+uv build                                       # Build distribution artifacts
 
 # Pre-commit
-pre-commit run --all-files             # Run all hooks
+uv run pre-commit run --all-files              # Run all hooks
 ```
 
 ## Key Conventions
@@ -47,4 +50,6 @@ pre-commit run --all-files             # Run all hooks
 
 ## Before Finishing
 
-Run `make python-lint`, `make python-typecheck`, `make python-test`, and `python -m build` from the repository root when possible.
+- Use `make install-dev` to sync development dependencies locally.
+- Before finishing, run `make python-lint`, `make python-typecheck`, `make python-test`, and
+  `uv build` from the repository root when possible.

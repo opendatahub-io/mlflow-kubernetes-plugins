@@ -39,7 +39,15 @@ Issues = "https://github.com/kubeflow/mlflow-integration/issues"
 Documentation = "https://github.com/kubeflow/mlflow-integration/tree/main/docs"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "pytest-mock>=3.10", "httpx>=0.27.0", "ruff", "ty>=0.0.35", "build"]
+dev = [
+    "build",
+    "httpx>=0.27.0",
+    "pre-commit",
+    "pytest>=7.4",
+    "pytest-mock>=3.10",
+    "ruff",
+    "ty>=0.0.35",
+]
 
 [project.entry-points."mlflow.workspace_provider"]
 kubernetes = "mlflow_kubernetes_plugins.workspace_plugin.provider:create_kubernetes_workspace_store"
