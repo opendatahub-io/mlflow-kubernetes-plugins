@@ -7,17 +7,25 @@ CONTROLLER_TOOLS_VERSION ?= v0.19.0
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 GENERATED_FILES = api/mlflowconfig/v1/zz_generated.deepcopy.go config/crd/bases/mlflow.kubeflow.org_mlflowconfigs.yaml
 
+.PHONY: install-dev
+install-dev: ## Install uv dependencies for local development.
+	@uv sync --extra dev
+
 .PHONY: python-lint
 python-lint: ## Run Python lint checks.
-	ruff check .
+	@uv run ruff check .
 
 .PHONY: python-typecheck
 python-typecheck: ## Run Python type checker.
-	ty check mlflow_kubernetes_plugins
+	@uv run ty check mlflow_kubernetes_plugins
 
 .PHONY: python-test
 python-test: ## Run Python test suite.
-	pytest -v
+	@uv run pytest -v
+
+.PHONY: python-build
+python-build: ## Build Python distribution artifacts.
+	@uv build
 
 .PHONY: image-build
 image-build: ## Build the container image.

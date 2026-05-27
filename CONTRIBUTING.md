@@ -7,14 +7,14 @@ For general Kubeflow contribution guidelines, please check the
 ## Requirements
 
 - [Supported Python version](./pyproject.toml#L10)
-- [pre-commit](https://pre-commit.com/)
+- [uv](https://docs.astral.sh/uv/)
 
 ## Development
 
 Install development dependencies:
 
 ```bash
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 You can see all available Make targets by running:
@@ -25,8 +25,8 @@ make help
 
 ### Coding Style
 
-Make sure to install [pre-commit](https://pre-commit.com/) (`pip install pre-commit`) and run
-`pre-commit install` from the root of the repository at least once before creating git commits.
+Make sure to install [pre-commit](https://pre-commit.com/) and run `uv run pre-commit install` from
+the root of the repository at least once before creating git commits.
 
 The pre-commit hooks ensure code quality and consistency. They are executed in CI. PRs that fail
 to comply with the hooks will not be able to pass the corresponding CI gate.
@@ -35,6 +35,12 @@ To check formatting:
 
 ```bash
 make python-lint
+```
+
+To run all pre-commit hooks manually:
+
+```bash
+uv run pre-commit run --all-files
 ```
 
 ## Testing
@@ -60,7 +66,7 @@ make verify-generated
 To build the Python package:
 
 ```bash
-python -m build
+uv build
 ```
 
 ## Best Practices
